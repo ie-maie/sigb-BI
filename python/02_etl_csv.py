@@ -10,9 +10,9 @@ import io
 import re
 import unicodedata
 from pathlib import Path
-from db_connect import get_connection
+from db_connect import ROOT_DIR, get_connection
 
-CSV_PATH  = Path("data/buf.csv")
+CSV_PATH  = ROOT_DIR / "data" / "buf.csv"
 ENCODING  = "latin-1"
 SEP       = ";"
 LANG_CODE = "fre"
@@ -141,11 +141,17 @@ def upsert_classif(cursor, cote):
 
 
 def load_csv():
+    if not CSV_PATH.exists():
+        raise FileNotFoundError(f"Fichier CSV introuvable : {CSV_PATH}")
+
     conn   = get_connection()
     cursor = conn.cursor()
 
     cursor.execute("SELECT id_langue FROM langue WHERE code_langue=%s", (LANG_CODE,))
-    id_langue = cursor.fetchone()[0]
+    row_langue = cursor.fetchone()
+    if not row_langue:
+        raise RuntimeError("La langue 'fre' est absente de la table langue.")
+    id_langue = row_langue[0]
 
     raw  = CSV_PATH.read_bytes()
     text = raw.decode(ENCODING)
