@@ -8,11 +8,10 @@ Feuil2: Cote|Inventaire
 
 import re
 import unicodedata
-from pathlib import Path
 import xlrd
-from db_connect import get_connection
+from db_connect import ROOT_DIR, get_connection
 
-XLS_PATH  = Path("data/bua.xls")
+XLS_PATH  = ROOT_DIR / "data" / "bua.xls"
 LANG_CODE = "ara"
 
 _cache_editeur = {}
@@ -230,11 +229,17 @@ def load_feuil2(cursor, wb):
 
 
 def load_excel():
+    if not XLS_PATH.exists():
+        raise FileNotFoundError(f"Fichier Excel introuvable : {XLS_PATH}")
+
     conn   = get_connection()
     cursor = conn.cursor(buffered=True)
 
     cursor.execute("SELECT id_langue FROM langue WHERE code_langue=%s", (LANG_CODE,))
-    id_langue = cursor.fetchone()[0]
+    row_langue = cursor.fetchone()
+    if not row_langue:
+        raise RuntimeError("La langue 'ara' est absente de la table langue.")
+    id_langue = row_langue[0]
 
     wb = xlrd.open_workbook(str(XLS_PATH))
 
