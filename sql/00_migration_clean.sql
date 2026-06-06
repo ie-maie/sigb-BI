@@ -1,8 +1,6 @@
 -- ============================================================================
 -- MIGRATION: Drop old schema and create new one
 -- ============================================================================
--- WARNING: This will DELETE ALL DATA. Use option 1 only if you're reloading.
-
 USE sigb;
 
 -- Drop existing tables (reverse order of foreign keys)
@@ -56,7 +54,7 @@ CREATE TABLE notice (
     id_editeur INT,
     id_langue INT,
     id_classification INT,
-    date_catalogage DATE DEFAULT CURRENT_DATE,
+    date_catalogage TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     note TEXT,
     FOREIGN KEY (id_editeur) REFERENCES editeur(id_editeur),
     FOREIGN KEY (id_langue) REFERENCES langue(id_langue),
@@ -66,7 +64,7 @@ CREATE TABLE notice (
 CREATE TABLE notice_auteur (
     id_notice INT,
     id_auteur INT,
-    PRIMARY KEY(id_notice,id_auteur),
+    PRIMARY KEY(id_notice, id_auteur),
     FOREIGN KEY(id_notice) REFERENCES notice(id_notice) ON DELETE CASCADE,
     FOREIGN KEY(id_auteur) REFERENCES auteur(id_auteur)
 );
@@ -74,14 +72,14 @@ CREATE TABLE notice_auteur (
 CREATE TABLE notice_matiere (
     id_notice INT,
     id_matiere INT,
-    PRIMARY KEY(id_notice,id_matiere),
+    PRIMARY KEY(id_notice, id_matiere),
     FOREIGN KEY(id_notice) REFERENCES notice(id_notice) ON DELETE CASCADE,
     FOREIGN KEY(id_matiere) REFERENCES matiere(id_matiere)
 );
 
 CREATE TABLE exemplaire (
     id_exemplaire INT AUTO_INCREMENT PRIMARY KEY,
-    num_inventaire VARCHAR(50) UNIQUE,
+    num_inventaire VARCHAR(50),
     id_notice INT NOT NULL,
     etat VARCHAR(50) DEFAULT 'Disponible',
     FOREIGN KEY(id_notice) REFERENCES notice(id_notice)
@@ -93,7 +91,3 @@ CREATE TABLE exemplaire (
 CREATE INDEX idx_notice_titre ON notice (titre(100));
 CREATE INDEX idx_auteur_nom ON auteur (nom_complet(100));
 CREATE INDEX idx_exemplaire_inv ON exemplaire (num_inventaire);
-
--- ============================================================================
--- MIGRATION COMPLETE
--- ============================================================================

@@ -59,7 +59,7 @@ CREATE TABLE notice_matiere (
 
 CREATE TABLE exemplaire (
     id_exemplaire INT AUTO_INCREMENT PRIMARY KEY,
-    num_inventaire VARCHAR(50) UNIQUE,
+    num_inventaire VARCHAR(50),
     id_notice INT NOT NULL,
     etat VARCHAR(50) DEFAULT 'Disponible',
     FOREIGN KEY(id_notice) REFERENCES notice(id_notice)
