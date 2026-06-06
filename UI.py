@@ -7,52 +7,31 @@
 ║    pip install mysql-connector-python python-dotenv pandas xlrd openpyxl    ║
 ║                                                                              ║
 ║  CONFIGURATION :                                                             ║
-║    1. Configurer DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD dans .env   ║
-║    2. Verifier que la VM MySQL est accessible depuis ce poste                ║
-║    3. Lancer l'interface depuis la racine du projet                          ║
-║                                                                              ║
-║  LANCEMENT :                                                                 ║
-║    python UI.py                                                              ║
+║    1. Configurer DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD dans .env  ║
+║    2. Verifier que MySQL est accessible depuis ce poste                      ║
+║    3. Lancer depuis la racine du projet : python UI.py                       ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """
 
 import os
-from pathlib import Path
-
-try:
-    from dotenv import load_dotenv
-except ImportError:
-    load_dotenv = None
-
-ROOT_DIR = Path(__file__).resolve().parent
-ENV_PATH = ROOT_DIR / ".env"
-SCHEMA_PATH = ROOT_DIR / "sql" / "01_create_schema.sql"
-
-if load_dotenv:
-    load_dotenv(ENV_PATH)
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  SECTION CONFIG  ← Modifier ces valeurs ou le fichier .env
-# ══════════════════════════════════════════════════════════════════════════════
-
-DB_HOST        = os.getenv("DB_HOST", "localhost")
-DB_PORT        = int(os.getenv("DB_PORT", "3306"))
-DB_NAME        = os.getenv("DB_NAME", "sigb")
-DB_USER        = os.getenv("DB_USER", "sigb_user")
-DB_PASSWORD    = os.getenv("DB_PASSWORD", "")
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  IMPORTS
-# ══════════════════════════════════════════════════════════════════════════════
-
-import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
-import threading
 import csv
 import re
 import unicodedata
+import threading
 from datetime import datetime
+from pathlib import Path
 
+# ── ETL scripts (extract / transform / load)
+from scripts import transform, load, export
+
+# ── optional .env support
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parent / ".env")
+except ImportError:
+    pass
+
+# ── optional MySQL driver
 try:
     import mysql.connector
     MYSQL_OK = True
@@ -60,15 +39,36 @@ except ImportError:
     mysql = None
     MYSQL_OK = False
 
+# ── optional pandas (needed for ETL import)
 try:
     import pandas as pd
     PANDAS_OK = True
 except ImportError:
+    pd = None
     PANDAS_OK = False
 
+import tkinter as tk
+from tkinter import ttk, messagebox, filedialog
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  CONSTANTES & THÈME
+#  PATHS
+# ══════════════════════════════════════════════════════════════════════════════
+
+ROOT_DIR    = Path(__file__).resolve().parent
+SCHEMA_PATH = ROOT_DIR / "sql" / "00_migration_clean.sql"
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  DATABASE CREDENTIALS  (overridden by .env)
+# ══════════════════════════════════════════════════════════════════════════════
+
+DB_HOST     = os.getenv("DB_HOST", "localhost")
+DB_PORT     = int(os.getenv("DB_PORT", "3306"))
+DB_NAME     = os.getenv("DB_NAME", "sigb")
+DB_USER     = os.getenv("DB_USER", "sigb_user")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "")
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  THEME & CONSTANTS
 # ══════════════════════════════════════════════════════════════════════════════
 
 APP_TITLE   = "SIGB — MySQL"
@@ -80,8 +80,6 @@ C_PRIMARY   = "#1A3A5C"
 C_PRIMARY_L = "#2E6DA4"
 C_ACCENT    = "#C0392B"
 C_GOLD      = "#D4A017"
-C_BUA       = "#1A3A5C"
-C_BUF       = "#8B1A1A"
 C_TEXT      = "#1A1A2E"
 C_MUTED     = "#6B7A99"
 C_BORDER    = "#DDE3EC"
@@ -90,18 +88,16 @@ C_ROW_EVEN  = "#FFFFFF"
 C_SEL       = "#D0E4F7"
 C_SUCCESS   = "#2A6E1A"
 C_ONLINE    = "#27AE60"
-C_OFFLINE   = "#E74C3C"
-C_ORANGE    = "#E67E22"
+C_ACCENT_R  = "#E74C3C"
 
 FONT_TITLE  = ("Segoe UI", 13, "bold")
 FONT_HEAD   = ("Segoe UI", 10, "bold")
 FONT_BODY   = ("Segoe UI", 9)
 FONT_SMALL  = ("Segoe UI", 8)
-FONT_MONO   = ("Courier New", 9)
 
-# Colonnes affichées dans le tableau
+# Columns displayed in the main grid (mapped to SQL aliases in search query)
 COLUMNS = [
-    "N_INVENTAIRE", "COTE", "TITRE",
+    "N_INVENTAIRE", "COTE",     "TITRE",
     "NOM_AUTEUR",   "NOM_LIEU", "NOM_EDITEUR",
     "ANNEE",        "NB_PAGES", "NOM_MATIERE",
     "CODE_FONDS",
@@ -119,154 +115,58 @@ COL_LABELS = {
     "CODE_FONDS":   "Fonds",
 }
 COL_WIDTHS = {
-    "N_INVENTAIRE": 75,
-    "COTE":         105,
-    "TITRE":        310,
-    "NOM_AUTEUR":   170,
-    "NOM_LIEU":     90,
-    "NOM_EDITEUR":  120,
-    "ANNEE":        58,
+    "N_INVENTAIRE": 80,
+    "COTE":         110,
+    "TITRE":        320,
+    "NOM_AUTEUR":   175,
+    "NOM_LIEU":     95,
+    "NOM_EDITEUR":  125,
+    "ANNEE":        60,
     "NB_PAGES":     60,
     "NOM_MATIERE":  200,
-    "CODE_FONDS":   58,
+    "CODE_FONDS":   60,
 }
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  LEGACY ORACLE DDL (non utilisé) — conservé pour référence uniquement
-#  NOTE: Le script DDL actif pour l'application est `sql/01_create_schema.sql` (MySQL).
-# ══════════════════════════════════════════════════════════════════════════════
-
-DDL_SCRIPT = """
--- ── Table FONDS ────────────────────────────────────────────────
-CREATE TABLE FONDS (
-    ID_FONDS   NUMBER(3)    GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    CODE       CHAR(3)      NOT NULL UNIQUE,
-    LIBELLE    VARCHAR2(100) NOT NULL
-);
-INSERT INTO FONDS (CODE, LIBELLE) VALUES ('BUA', 'Bibliotheque universitaire arabe');
-INSERT INTO FONDS (CODE, LIBELLE) VALUES ('BUF', 'Bibliotheque universitaire francaise');
-
--- ── Table AUTEUR ────────────────────────────────────────────────
-CREATE TABLE AUTEUR (
-    ID_AUTEUR  NUMBER(10)   GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    NOM        VARCHAR2(300) NOT NULL,
-    CONSTRAINT UQ_AUTEUR_NOM UNIQUE (NOM)
-);
-
--- ── Table EDITEUR ───────────────────────────────────────────────
-CREATE TABLE EDITEUR (
-    ID_EDITEUR NUMBER(10)   GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    NOM        VARCHAR2(200) NOT NULL,
-    LIEU       VARCHAR2(100),
-    CONSTRAINT UQ_EDITEUR UNIQUE (NOM, LIEU)
-);
-
--- ── Table MATIERE ───────────────────────────────────────────────
-CREATE TABLE MATIERE (
-    ID_MATIERE NUMBER(10)   GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    LIBELLE    VARCHAR2(400) NOT NULL,
-    CONSTRAINT UQ_MATIERE UNIQUE (LIBELLE)
-);
-
--- ── Table NOTICE ────────────────────────────────────────────────
-CREATE TABLE NOTICE (
-    ID_NOTICE    NUMBER(10)   GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    N_INVENTAIRE NUMBER(10)   NOT NULL UNIQUE,
-    COTE         VARCHAR2(120) NOT NULL,
-    TITRE        VARCHAR2(600) NOT NULL,
-    ANNEE        NUMBER(4),
-    NB_PAGES     NUMBER(5),
-    ID_FONDS     NUMBER(3)    NOT NULL,
-    ID_AUTEUR    NUMBER(10),
-    ID_EDITEUR   NUMBER(10),
-    ID_MATIERE   NUMBER(10),
-    DATE_AJOUT   TIMESTAMP    DEFAULT SYSTIMESTAMP,
-    CONSTRAINT FK_NOT_FONDS   FOREIGN KEY (ID_FONDS)   REFERENCES FONDS(ID_FONDS),
-    CONSTRAINT FK_NOT_AUTEUR  FOREIGN KEY (ID_AUTEUR)  REFERENCES AUTEUR(ID_AUTEUR),
-    CONSTRAINT FK_NOT_EDITEUR FOREIGN KEY (ID_EDITEUR) REFERENCES EDITEUR(ID_EDITEUR),
-    CONSTRAINT FK_NOT_MATIERE FOREIGN KEY (ID_MATIERE) REFERENCES MATIERE(ID_MATIERE)
-);
-CREATE INDEX IDX_NOTICE_TITRE ON NOTICE(TITRE);
-CREATE INDEX IDX_NOTICE_ANNEE ON NOTICE(ANNEE);
-CREATE INDEX IDX_NOTICE_COTE  ON NOTICE(COTE);
-
--- ── Table EXEMPLAIRE ────────────────────────────────────────────
-CREATE TABLE EXEMPLAIRE (
-    ID_EXEMPLAIRE NUMBER(10)  GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    ID_NOTICE     NUMBER(10)  NOT NULL,
-    STATUT        VARCHAR2(20) DEFAULT 'disponible'
-                  CHECK (STATUT IN ('disponible','emprunte','perdu','reserve')),
-    LOCALISATION  VARCHAR2(100),
-    CONSTRAINT FK_EX_NOTICE FOREIGN KEY (ID_NOTICE) REFERENCES NOTICE(ID_NOTICE)
-);
-
--- ── Vue v_notices ────────────────────────────────────────────────
-CREATE OR REPLACE VIEW LEGACY_NOTICES AS
-SELECT
-    n.ID_NOTICE,
-    n.N_INVENTAIRE,
-    n.COTE,
-    n.TITRE,
-    a.NOM        AS NOM_AUTEUR,
-    e.LIEU       AS NOM_LIEU,
-    e.NOM        AS NOM_EDITEUR,
-    n.ANNEE,
-    n.NB_PAGES,
-    m.LIBELLE    AS NOM_MATIERE,
-    f.CODE       AS CODE_FONDS,
-    n.DATE_AJOUT
-FROM NOTICE n
-LEFT JOIN AUTEUR  a ON a.ID_AUTEUR  = n.ID_AUTEUR
-LEFT JOIN EDITEUR e ON e.ID_EDITEUR = n.ID_EDITEUR
-LEFT JOIN MATIERE m ON m.ID_MATIERE = n.ID_MATIERE
-JOIN      FONDS   f ON f.ID_FONDS   = n.ID_FONDS;
-"""
-
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  COUCHE ACCÈS DONNÉES (DAO)
+#  DATA ACCESS LAYER  (MySQLDAO)
+#  Schema: sql/00_migration_clean.sql
+#  Tables: langue, editeur, auteur, classification, matiere,
+#          notice, notice_auteur, notice_matiere, exemplaire
 # ══════════════════════════════════════════════════════════════════════════════
 
 class MySQLDAO:
-    """
-    Toutes les interactions avec la base MySQL passent par cette classe.
-    Le schema correspond aux tables creees dans sql/01_create_schema.sql.
-    """
+    """All MySQL interactions go through this class."""
 
+    # Maps UI fonds codes to DB language codes and vice-versa
     LANG_BY_FONDS = {"BUA": "ara", "BUF": "fre"}
     FONDS_BY_LANG = {"ara": "BUA", "fre": "BUF"}
 
     def __init__(self, host=DB_HOST, port=DB_PORT, database=DB_NAME,
                  user=DB_USER, password=DB_PASSWORD):
-        self.host       = host
-        self.port       = int(port)
-        self.database   = database
-        self.user       = user
-        self.password   = password
-        self.conn       = None
+        self.host     = host
+        self.port     = int(port)
+        self.database = database
+        self.user     = user
+        self.password = password
+        self.conn     = None
         self._connected = False
 
-    # ── Connexion ──────────────────────────────────────────────────────────
+    # ── Connection management ─────────────────────────────────────────────────
 
     def connect(self):
-        """Etablit la connexion MySQL."""
         if not MYSQL_OK:
             raise RuntimeError(
-                "mysql-connector-python non installe.\n"
-                "Executez : pip install mysql-connector-python python-dotenv"
+                "mysql-connector-python non installé.\n"
+                "Exécutez : pip install mysql-connector-python python-dotenv"
             )
         self.conn = mysql.connector.connect(
-            host=self.host,
-            port=self.port,
-            database=self.database,
-            user=self.user,
-            password=self.password,
-            charset="utf8mb4",
-            connection_timeout=10,
-            use_pure=True,
+            host=self.host, port=self.port, database=self.database,
+            user=self.user, password=self.password,
+            charset="utf8mb4", connection_timeout=10, use_pure=True,
         )
         if not self.conn.is_connected():
-            raise RuntimeError("La connexion MySQL a ete creee mais elle n'est pas active.")
+            raise RuntimeError("Connexion créée mais inactive.")
         self._connected = True
         return True
 
@@ -283,56 +183,73 @@ class MySQLDAO:
         return self._connected and self.conn is not None
 
     def ping(self):
-        """Vérifie que la connexion est toujours active."""
         try:
-            self.conn.ping(reconnect=True, attempts=1, delay=0)
-            return True
+            if self.conn:
+                self.conn.ping(reconnect=True, attempts=1, delay=0)
+                return True
         except Exception:
             self._connected = False
-            return False
-
-    # ── Initialisation du schéma ──────────────────────────────────────────
-
-    def init_schema(self):
-        """Crée les tables si elles n'existent pas encore."""
-        cur = self.conn.cursor()
-        cur.execute("SHOW TABLES LIKE 'notice'")
-        if cur.fetchone() is None:
-            if not SCHEMA_PATH.exists():
-                raise FileNotFoundError(f"Schema SQL introuvable : {SCHEMA_PATH}")
-            for stmt in SCHEMA_PATH.read_text(encoding="utf-8").split(";"):
-                stmt = stmt.strip()
-                if stmt and not stmt.startswith("--"):
-                    cur.execute(stmt)
-            self.conn.commit()
-            cur.close()
-            return True
-        cur.close()
         return False
 
-    # ── RECHERCHE ─────────────────────────────────────────────────────────
+    # ── Schema management ─────────────────────────────────────────────────────
+
+    def schema_exists(self):
+        """Returns True if the 'notice' table already exists in the database."""
+        try:
+            cur = self.conn.cursor()
+            cur.execute("SHOW TABLES LIKE 'notice'")
+            res = cur.fetchone()
+            cur.close()
+            return res is not None
+        except Exception:
+            return False
+
+    def init_schema(self):
+        """
+        Executes sql/00_migration_clean.sql to create all tables.
+        Called only when schema_exists() is False.
+        """
+        if not SCHEMA_PATH.exists():
+            raise FileNotFoundError(f"Schema SQL introuvable : {SCHEMA_PATH}")
+
+        sql_script = SCHEMA_PATH.read_text(encoding="utf-8")
+
+        # Strip comment lines then split on semicolons
+        lines = [l for l in sql_script.splitlines() if not l.strip().startswith("--")]
+        statements = [s.strip() for s in "\n".join(lines).split(";") if s.strip()]
+
+        cur = self.conn.cursor()
+        try:
+            for stmt in statements:
+                cur.execute(stmt)
+            self.conn.commit()
+        finally:
+            cur.close()
+        return True
+
+    # ── Search / read ─────────────────────────────────────────────────────────
 
     def search(self, keyword="", field="TOUS", fonds="TOUS",
                yr_from=None, yr_to=None,
                sort_col="N_INVENTAIRE", sort_asc=True,
-               limit=500, offset=0):
+               limit=100, offset=0):
         """
-        Recherche paginee dans les tables MySQL normalisees.
-        Retourne (rows: list[dict], total: int)
+        Paginated search across the normalised MySQL schema.
+        Returns (rows: list[dict], total: int).
+        Columns come directly from base tables to avoid subquery overhead.
         """
         field_map = {
-            "TOUS":       None,
-            "TITRE":      "TITRE",
-            "AUTEUR":     "NOM_AUTEUR",
-            "COTE":       "COTE",
-            "MATIERE":    "NOM_MATIERE",
-            "EDITEUR":    "NOM_EDITEUR",
-            "LIEU":       "NOM_LIEU",
+            "TOUS":    None,
+            "TITRE":   "n.titre",
+            "AUTEUR":  "a.nom_complet",
+            "COTE":    "c.cote",
+            "MATIERE": "m.libelle",
+            "EDITEUR": "ed.nom_editeur",
+            "LIEU":    "n.lieu_edition",
         }
         sql_field = field_map.get(field.upper())
 
-        conditions = []
-        params     = []
+        conditions, params = [], []
 
         if keyword:
             kw = f"%{keyword.upper()}%"
@@ -341,56 +258,100 @@ class MySQLDAO:
                 params.append(kw)
             else:
                 conditions.append(
-                    "(UPPER(COALESCE(TITRE, '')) LIKE %s "
-                    "OR UPPER(COALESCE(NOM_AUTEUR, '')) LIKE %s "
-                    "OR UPPER(COALESCE(COTE, '')) LIKE %s "
-                    "OR UPPER(COALESCE(NOM_MATIERE, '')) LIKE %s "
-                    "OR UPPER(COALESCE(NOM_EDITEUR, '')) LIKE %s)"
+                    "(UPPER(COALESCE(n.titre, '')) LIKE %s "
+                    "OR UPPER(COALESCE(a.nom_complet, '')) LIKE %s "
+                    "OR UPPER(COALESCE(c.cote, '')) LIKE %s "
+                    "OR UPPER(COALESCE(m.libelle, '')) LIKE %s "
+                    "OR UPPER(COALESCE(ed.nom_editeur, '')) LIKE %s)"
                 )
                 params.extend([kw] * 5)
 
         if fonds and fonds != "TOUS":
-            conditions.append("CODE_FONDS = %s")
-            params.append(fonds)
+            conditions.append("l.code_langue = %s")
+            params.append("ara" if fonds == "BUA" else "fre")
 
         if yr_from:
-            conditions.append("ANNEE >= %s")
+            conditions.append("n.annee_pub >= %s")
             params.append(int(yr_from))
         if yr_to:
-            conditions.append("ANNEE <= %s")
+            conditions.append("n.annee_pub <= %s")
             params.append(int(yr_to))
 
         where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+
         direction = "ASC" if sort_asc else "DESC"
-        safe_sort = sort_col if sort_col in COL_LABELS else "N_INVENTAIRE"
+        sort_map = {
+            "N_INVENTAIRE": "ex.num_inventaire",
+            "COTE":         "c.cote",
+            "TITRE":        "n.titre",
+            "NOM_AUTEUR":   "a.nom_complet",
+            "NOM_LIEU":     "n.lieu_edition",
+            "NOM_EDITEUR":  "ed.nom_editeur",
+            "ANNEE":        "n.annee_pub",
+            "NB_PAGES":     "n.nb_pages",
+            "NOM_MATIERE":  "m.libelle",
+            "CODE_FONDS":   "l.code_langue",
+        }
+        safe_sort = sort_map.get(sort_col, "ex.num_inventaire")
 
-        base_sql = self._base_select()
-        sql = f"""
-            SELECT *
-            FROM ({base_sql}) v
-            {where}
-            ORDER BY ({safe_sort} IS NULL), {safe_sort} {direction}
-            LIMIT %s OFFSET %s
+        joins = """
+            FROM notice n
+            LEFT JOIN langue         l  ON l.id_langue        = n.id_langue
+            LEFT JOIN classification c  ON c.id_classification= n.id_classification
+            LEFT JOIN editeur        ed ON ed.id_editeur       = n.id_editeur
+            LEFT JOIN exemplaire     ex ON ex.id_notice        = n.id_notice
+            LEFT JOIN notice_auteur  na ON na.id_notice        = n.id_notice
+            LEFT JOIN auteur         a  ON a.id_auteur         = na.id_auteur
+            LEFT JOIN notice_matiere nm ON nm.id_notice        = n.id_notice
+            LEFT JOIN matiere        m  ON m.id_matiere        = nm.id_matiere
         """
-        sql_count = f"SELECT COUNT(*) FROM ({base_sql}) v {where}"
 
-        # Use a fresh connection for both the count and the paged select to avoid using
-        # the main connection from a background thread (thread-safety issues with C ext).
+        sql_data = f"""
+            SELECT
+                n.id_notice          AS ID_NOTICE,
+                ex.num_inventaire    AS N_INVENTAIRE,
+                c.cote               AS COTE,
+                n.titre              AS TITRE,
+                GROUP_CONCAT(DISTINCT a.nom_complet  SEPARATOR '; ') AS NOM_AUTEUR,
+                n.lieu_edition       AS NOM_LIEU,
+                ed.nom_editeur       AS NOM_EDITEUR,
+                n.annee_pub          AS ANNEE,
+                n.nb_pages           AS NB_PAGES,
+                GROUP_CONCAT(DISTINCT m.libelle      SEPARATOR '; ') AS NOM_MATIERE,
+                CASE l.code_langue
+                    WHEN 'ara' THEN 'BUA'
+                    WHEN 'fre' THEN 'BUF'
+                    ELSE UPPER(l.code_langue)
+                END                  AS CODE_FONDS,
+                n.date_catalogage    AS DATE_AJOUT
+            {joins}
+            {where}
+            GROUP BY ex.id_exemplaire, n.id_notice
+            ORDER BY ({safe_sort} IS NULL), {safe_sort} {direction}
+            LIMIT {int(limit)} OFFSET {int(offset)}
+        """
+
+        sql_count = f"""
+            SELECT COUNT(DISTINCT ex.id_exemplaire)
+            {joins}
+            {where}
+        """
+
         conn2 = mysql.connector.connect(
             host=self.host, port=self.port, database=self.database,
-            user=self.user, password=self.password, charset="utf8mb4",
-            connection_timeout=10, use_pure=True,
+            user=self.user, password=self.password,
+            charset="utf8mb4", connection_timeout=10, use_pure=True,
         )
         try:
-            cur2 = conn2.cursor()
-            cur2.execute(sql_count, tuple(params))
-            total = cur2.fetchone()[0]
-            cur2.close()
+            cur = conn2.cursor()
+            cur.execute(sql_count, tuple(params))
+            total = cur.fetchone()[0]
+            cur.close()
 
-            curd = conn2.cursor(dictionary=True)
-            curd.execute(sql, tuple(params + [int(limit), int(offset)]))
-            rows = curd.fetchall()
-            curd.close()
+            cur = conn2.cursor(dictionary=True)
+            cur.execute(sql_data, tuple(params))
+            rows = cur.fetchall()
+            cur.close()
         finally:
             try:
                 conn2.close()
@@ -398,46 +359,8 @@ class MySQLDAO:
                 pass
         return rows, total
 
-    def _base_select(self):
-        return """
-            SELECT
-                n.id_notice AS ID_NOTICE,
-                ex.num_inventaire AS N_INVENTAIRE,
-                COALESCE(ex.cote_exemplaire, c.cote) AS COTE,
-                n.titre AS TITRE,
-                GROUP_CONCAT(
-                    DISTINCT TRIM(CONCAT(COALESCE(a.nom, ''), ' ', COALESCE(a.prenom, '')))
-                    SEPARATOR '; '
-                ) AS NOM_AUTEUR,
-                ed.ville AS NOM_LIEU,
-                ed.nom_editeur AS NOM_EDITEUR,
-                n.annee_pub AS ANNEE,
-                n.nb_pages AS NB_PAGES,
-                GROUP_CONCAT(DISTINCT m.libelle SEPARATOR '; ') AS NOM_MATIERE,
-                CASE l.code_langue
-                    WHEN 'ara' THEN 'BUA'
-                    WHEN 'fre' THEN 'BUF'
-                    ELSE UPPER(l.code_langue)
-                END AS CODE_FONDS,
-                n.date_catalogage AS DATE_AJOUT
-            FROM notice n
-            LEFT JOIN langue l ON l.id_langue = n.id_langue
-            LEFT JOIN classification c ON c.id_classification = n.id_classification
-            LEFT JOIN editeur ed ON ed.id_editeur = n.id_editeur
-            LEFT JOIN exemplaire ex ON ex.id_notice = n.id_notice
-            LEFT JOIN notice_auteur na ON na.id_notice = n.id_notice
-            LEFT JOIN auteur a ON a.id_auteur = na.id_auteur
-            LEFT JOIN notice_matiere nm ON nm.id_notice = n.id_notice
-            LEFT JOIN matiere m ON m.id_matiere = nm.id_matiere
-            GROUP BY
-                n.id_notice, ex.num_inventaire, ex.cote_exemplaire, c.cote,
-                n.titre, ed.ville, ed.nom_editeur, n.annee_pub, n.nb_pages,
-                l.code_langue, n.date_catalogage
-        """
-
-    # ── OBTENIR UNE NOTICE COMPLÈTE ──────────────────────────────────────
-
     def get_notice(self, id_notice):
+        """Fetch a single notice by ID for editing (uses _base_select)."""
         cur = self.conn.cursor(dictionary=True)
         cur.execute(f"""
             SELECT *
@@ -449,262 +372,53 @@ class MySQLDAO:
         cur.close()
         return row
 
-    # ── INSERT ou GET FK (pour auteur/editeur/matiere) ───────────────────
-
-    def _clean(self, value):
-        if value is None:
-            return ""
-        text = str(value).strip()
-        return "".join(c for c in text if unicodedata.category(c)[0] != "C").strip()
-
-    def _safe_int(self, value):
-        value = self._clean(value)
-        try:
-            return int(float(value)) if value else None
-        except (TypeError, ValueError):
-            return None
-
-    def _split_values(self, value):
-        value = self._clean(value)
-        if not value:
-            return []
-        return [p.strip() for p in re.split(r"\s*[;/]\s*", value) if p.strip()]
-
-    def _parse_auteur(self, value):
-        value = self._clean(value)
-        if not value:
-            return None, None
-        if "," in value:
-            nom, prenom = value.split(",", 1)
-            return self._clean(nom), self._clean(prenom) or None
-        parts = value.split()
-        if len(parts) > 1 and parts[0].isupper():
-            return parts[0], " ".join(parts[1:]) or None
-        return value, None
-
-    def _get_langue_id(self, fonds_code):
-        code = self.LANG_BY_FONDS.get((fonds_code or "BUF").upper(), "fre")
-        cur = self.conn.cursor()
-        cur.execute("SELECT id_langue FROM langue WHERE code_langue=%s", (code,))
-        row = cur.fetchone()
-        if row:
-            cur.close()
-            return row[0]
-        libelle = {"ara": "Arabe", "fre": "Francais", "eng": "Anglais"}.get(code, code)
-        cur.execute(
-            "INSERT INTO langue (code_langue, libelle) VALUES (%s, %s)",
-            (code, libelle),
-        )
-        self.conn.commit()
-        new_id = cur.lastrowid
-        cur.close()
-        return new_id
-
-    def _get_or_create_classification(self, cote):
-        cote = self._clean(cote)
-        if not cote:
-            return None
-        cur = self.conn.cursor()
-        cur.execute("INSERT IGNORE INTO classification (cote) VALUES (%s)", (cote,))
-        cur.execute("SELECT id_classification FROM classification WHERE cote=%s", (cote,))
-        row = cur.fetchone()
-        cur.close()
-        return row[0] if row else None
-
-    def _get_or_create_matiere(self, libelle):
-        libelle = self._clean(libelle)
-        if not libelle:
-            return None
-        cur = self.conn.cursor()
-        cur.execute("INSERT IGNORE INTO matiere (libelle) VALUES (%s)", (libelle,))
-        cur.execute("SELECT id_matiere FROM matiere WHERE libelle=%s", (libelle,))
-        row = cur.fetchone()
-        cur.close()
-        return row[0] if row else None
-
-    def _get_or_create_auteur(self, auteur):
-        nom, prenom = self._parse_auteur(auteur)
-        if not nom:
-            return None
-        cur = self.conn.cursor()
-        cur.execute(
-            "INSERT IGNORE INTO auteur (nom, prenom) VALUES (%s, %s)",
-            (nom, prenom),
-        )
-        cur.execute(
-            "SELECT id_auteur FROM auteur "
-            "WHERE nom=%s AND COALESCE(prenom,'')=COALESCE(%s,'')",
-            (nom, prenom),
-        )
-        row = cur.fetchone()
-        cur.close()
-        return row[0] if row else None
-
-    def _get_or_create_editeur(self, nom, lieu):
-        nom = self._clean(nom)
-        lieu = self._clean(lieu) or None
-        if not nom:
-            return None
-        cur = self.conn.cursor()
-        cur.execute(
-            "INSERT IGNORE INTO editeur (nom_editeur, ville) VALUES (%s, %s)",
-            (nom, lieu),
-        )
-        cur.execute(
-            "SELECT id_editeur FROM editeur "
-            "WHERE nom_editeur=%s AND COALESCE(ville,'')=COALESCE(%s,'')",
-            (nom, lieu),
-        )
-        row = cur.fetchone()
-        cur.close()
-        return row[0] if row else None
-
-    def _link_people_and_subjects(self, cur, id_notice, auteurs, matieres):
-        for auteur in self._split_values(auteurs):
-            id_auteur = self._get_or_create_auteur(auteur)
-            if id_auteur:
-                cur.execute(
-                    "INSERT IGNORE INTO notice_auteur (id_notice, id_auteur) VALUES (%s, %s)",
-                    (id_notice, id_auteur),
-                )
-        for matiere in self._split_values(matieres):
-            id_matiere = self._get_or_create_matiere(matiere)
-            if id_matiere:
-                cur.execute(
-                    "INSERT IGNORE INTO notice_matiere (id_notice, id_matiere) VALUES (%s, %s)",
-                    (id_notice, id_matiere),
-                )
-
-    def _upsert_exemplaire(self, cur, id_notice, inventaire, cote):
-        inventaire = self._clean(inventaire)
-        cote = self._clean(cote)
-        if not inventaire:
-            return
-        cur.execute("SELECT id_exemplaire FROM exemplaire WHERE id_notice=%s LIMIT 1", (id_notice,))
-        row = cur.fetchone()
-        if row:
-            cur.execute(
-                "UPDATE exemplaire SET num_inventaire=%s, cote_exemplaire=%s WHERE id_exemplaire=%s",
-                (inventaire, cote, row[0]),
-            )
-        else:
-            cur.execute(
-                "INSERT INTO exemplaire (num_inventaire, id_notice, cote_exemplaire) VALUES (%s, %s, %s)",
-                (inventaire, id_notice, cote),
-            )
-
-    def _notice_exists_by_inventory(self, inventaire):
-        inventaire = self._clean(inventaire)
-        if not inventaire:
-            return False
-        cur = self.conn.cursor()
-        cur.execute("SELECT 1 FROM exemplaire WHERE num_inventaire=%s LIMIT 1", (inventaire,))
-        row = cur.fetchone()
-        cur.close()
-        return bool(row)
-
-    # ── AJOUTER UNE NOTICE ───────────────────────────────────────────────
-
-    def add_notice(self, data):
+    def _base_select(self):
+        """Full aggregated SELECT used for single-record retrieval (get_notice)."""
+        return """
+            SELECT
+                n.id_notice          AS ID_NOTICE,
+                ex.num_inventaire    AS N_INVENTAIRE,
+                c.cote               AS COTE,
+                n.titre              AS TITRE,
+                GROUP_CONCAT(DISTINCT a.nom_complet  SEPARATOR '; ') AS NOM_AUTEUR,
+                n.lieu_edition       AS NOM_LIEU,
+                ed.nom_editeur       AS NOM_EDITEUR,
+                n.annee_pub          AS ANNEE,
+                n.nb_pages           AS NB_PAGES,
+                GROUP_CONCAT(DISTINCT m.libelle      SEPARATOR '; ') AS NOM_MATIERE,
+                CASE l.code_langue
+                    WHEN 'ara' THEN 'BUA'
+                    WHEN 'fre' THEN 'BUF'
+                    ELSE UPPER(l.code_langue)
+                END                  AS CODE_FONDS,
+                n.date_catalogage    AS DATE_AJOUT
+            FROM notice n
+            LEFT JOIN langue         l  ON l.id_langue         = n.id_langue
+            LEFT JOIN classification c  ON c.id_classification = n.id_classification
+            LEFT JOIN editeur        ed ON ed.id_editeur        = n.id_editeur
+            LEFT JOIN exemplaire     ex ON ex.id_notice         = n.id_notice
+            LEFT JOIN notice_auteur  na ON na.id_notice         = n.id_notice
+            LEFT JOIN auteur         a  ON a.id_auteur          = na.id_auteur
+            LEFT JOIN notice_matiere nm ON nm.id_notice         = n.id_notice
+            LEFT JOIN matiere        m  ON m.id_matiere         = nm.id_matiere
+            GROUP BY ex.id_exemplaire, n.id_notice
         """
-        data = dict avec clés :
-          N_INVENTAIRE, COTE, TITRE, NOM_AUTEUR, NOM_LIEU,
-          NOM_EDITEUR, ANNEE, NB_PAGES, NOM_MATIERE, CODE_FONDS
-        """
-        inv = self._clean(data.get("N_INVENTAIRE"))
-        if self._notice_exists_by_inventory(inv):
-            raise RuntimeError(f"Le numero d'inventaire existe deja : {inv}")
-
-        cur = self.conn.cursor()
-        cur.execute("""
-            INSERT INTO notice
-                (titre, annee_pub, nb_pages, id_editeur, id_langue, id_classification)
-            VALUES (%s, %s, %s, %s, %s, %s)
-        """, (
-            self._clean(data.get("TITRE")),
-            self._safe_int(data.get("ANNEE")),
-            self._safe_int(data.get("NB_PAGES")),
-            self._get_or_create_editeur(data.get("NOM_EDITEUR"), data.get("NOM_LIEU")),
-            self._get_langue_id(data.get("CODE_FONDS", "BUF")),
-            self._get_or_create_classification(data.get("COTE")),
-        ))
-        id_notice = cur.lastrowid
-        self._link_people_and_subjects(
-            cur, id_notice, data.get("NOM_AUTEUR"), data.get("NOM_MATIERE")
-        )
-        self._upsert_exemplaire(cur, id_notice, inv, data.get("COTE"))
-        self.conn.commit()
-        cur.close()
-
-    # ── MODIFIER UNE NOTICE ──────────────────────────────────────────────
-
-    def update_notice(self, id_notice, data):
-        cur = self.conn.cursor()
-        cur.execute("""
-            UPDATE notice SET
-                titre=%s,
-                annee_pub=%s,
-                nb_pages=%s,
-                id_editeur=%s,
-                id_langue=%s,
-                id_classification=%s
-            WHERE id_notice=%s
-        """, (
-            self._clean(data.get("TITRE")),
-            self._safe_int(data.get("ANNEE")),
-            self._safe_int(data.get("NB_PAGES")),
-            self._get_or_create_editeur(data.get("NOM_EDITEUR"), data.get("NOM_LIEU")),
-            self._get_langue_id(data.get("CODE_FONDS", "BUF")),
-            self._get_or_create_classification(data.get("COTE")),
-            id_notice,
-        ))
-        cur.execute("DELETE FROM notice_auteur WHERE id_notice=%s", (id_notice,))
-        cur.execute("DELETE FROM notice_matiere WHERE id_notice=%s", (id_notice,))
-        self._link_people_and_subjects(
-            cur, id_notice, data.get("NOM_AUTEUR"), data.get("NOM_MATIERE")
-        )
-        self._upsert_exemplaire(
-            cur, id_notice, data.get("N_INVENTAIRE"), data.get("COTE")
-        )
-        self.conn.commit()
-        cur.close()
-
-    # ── SUPPRIMER UNE NOTICE ─────────────────────────────────────────────
-
-    def delete_notice(self, id_notice):
-        cur = self.conn.cursor()
-        cur.execute("DELETE FROM exemplaire WHERE id_notice=%s", (id_notice,))
-        cur.execute("DELETE FROM notice WHERE id_notice=%s", (id_notice,))
-        self.conn.commit()
-        cur.close()
-
-    # ── STATISTIQUES ─────────────────────────────────────────────────────
 
     def get_stats(self):
-        # Use a dedicated connection for stats to avoid threading issues
+        """Returns summary counts for the status bar."""
         conn2 = mysql.connector.connect(
             host=self.host, port=self.port, database=self.database,
-            user=self.user, password=self.password, charset="utf8mb4",
-            connection_timeout=10, use_pure=True,
+            user=self.user, password=self.password,
+            charset="utf8mb4", connection_timeout=10, use_pure=True,
         )
         stats = {}
         try:
             cur = conn2.cursor()
             cur.execute("SELECT COUNT(*) FROM notice")
             stats["total"] = cur.fetchone()[0]
-            cur.execute("""
-                SELECT COUNT(*)
-                FROM notice n
-                JOIN langue l ON l.id_langue=n.id_langue
-                WHERE l.code_langue='ara'
-            """)
+            cur.execute("SELECT COUNT(*) FROM notice n JOIN langue l ON l.id_langue=n.id_langue WHERE l.code_langue='ara'")
             stats["bua"] = cur.fetchone()[0]
-            cur.execute("""
-                SELECT COUNT(*)
-                FROM notice n
-                JOIN langue l ON l.id_langue=n.id_langue
-                WHERE l.code_langue='fre'
-            """)
+            cur.execute("SELECT COUNT(*) FROM notice n JOIN langue l ON l.id_langue=n.id_langue WHERE l.code_langue='fre'")
             stats["buf"] = cur.fetchone()[0]
             cur.execute("SELECT COUNT(*) FROM matiere")
             stats["matieres"] = cur.fetchone()[0]
@@ -718,61 +432,285 @@ class MySQLDAO:
                 pass
         return stats
 
-    # ── IMPORT BULK (XLS / CSV) ──────────────────────────────────────────
+    # ── Single-record CRUD ────────────────────────────────────────────────────
+    # These methods are used by ItemDialog (add/edit/delete individual notices)
 
-    def bulk_insert(self, rows, fonds_code, progress_cb=None):
-        """
-        Insere une liste de dicts (colonnes normalisees).
-        rows : liste de dicts avec clés Cote/Titre/Auteur/Lieu/Edition/Annee/Nb_pages/Matiere/Inventaire
-        """
-        id_langue = self._get_langue_id(fonds_code)
+    def _clean(self, value):
+        if value is None:
+            return ""
+        text = str(value).strip()
+        return "".join(c for c in text if unicodedata.category(c)[0] != "C").strip()
+
+    def _safe_int(self, value):
+        v = self._clean(value)
+        try:
+            return int(float(v)) if v else None
+        except (TypeError, ValueError):
+            return None
+
+    def _split_values(self, value):
+        v = self._clean(value)
+        if not v:
+            return []
+        return [p.strip() for p in re.split(r"\s*[;/]\s*", v) if p.strip()]
+
+    def _get_langue_id(self, fonds_code):
+        code = self.LANG_BY_FONDS.get((fonds_code or "BUF").upper(), "fre")
         cur = self.conn.cursor()
-        ok = 0
-        for i, r in enumerate(rows):
-            try:
-                inv = self._clean(r.get("Inventaire"))
-                if not inv:
-                    continue
-                cur.execute("SELECT 1 FROM exemplaire WHERE num_inventaire=%s LIMIT 1", (inv,))
-                if cur.fetchone():
-                    continue
-                titre = self._clean(r.get("Titre"))
-                if not titre:
-                    continue
-                cote = self._clean(r.get("Cote"))
-                cur.execute("""
-                    INSERT INTO notice
-                        (titre, annee_pub, nb_pages, id_editeur, id_langue, id_classification)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                """, (
-                    titre,
-                    self._safe_int(r.get("Annee")),
-                    self._safe_int(r.get("Nb_pages")),
-                    self._get_or_create_editeur(r.get("Edition"), r.get("Lieu")),
-                    id_langue,
-                    self._get_or_create_classification(cote),
-                ))
-                id_notice = cur.lastrowid
-                self._link_people_and_subjects(
-                    cur, id_notice, r.get("Auteur"), r.get("Matiere")
+        cur.execute("SELECT id_langue FROM langue WHERE code_langue=%s", (code,))
+        row = cur.fetchone()
+        if row:
+            cur.close()
+            return row[0]
+        libelle = {"ara": "Arabe", "fre": "Francais", "eng": "Anglais"}.get(code, code)
+        cur.execute("INSERT INTO langue (code_langue, libelle) VALUES (%s, %s)", (code, libelle))
+        self.conn.commit()
+        new_id = cur.lastrowid
+        cur.close()
+        return new_id
+
+    def _get_or_create(self, table, key_col, id_col, value):
+        """Generic get-or-create for lookup tables (editeur, classification, matiere, auteur)."""
+        value = self._clean(value)
+        if not value:
+            return None
+        cur = self.conn.cursor()
+        cur.execute(f"INSERT IGNORE INTO {table} ({key_col}) VALUES (%s)", (value,))
+        cur.execute(f"SELECT {id_col} FROM {table} WHERE {key_col}=%s", (value,))
+        row = cur.fetchone()
+        cur.close()
+        return row[0] if row else None
+
+    def _link_authors_and_subjects(self, cur, id_notice, auteurs, matieres):
+        for auteur in self._split_values(auteurs):
+            id_a = self._get_or_create("auteur", "nom_complet", "id_auteur", auteur)
+            if id_a:
+                cur.execute(
+                    "INSERT IGNORE INTO notice_auteur (id_notice, id_auteur) VALUES (%s, %s)",
+                    (id_notice, id_a),
                 )
-                self._upsert_exemplaire(cur, id_notice, inv, cote)
-                ok += 1
-            except Exception:
-                pass
-            if progress_cb and i % 100 == 0:
-                progress_cb(i, len(rows))
+        for matiere in self._split_values(matieres):
+            id_m = self._get_or_create("matiere", "libelle", "id_matiere", matiere)
+            if id_m:
+                cur.execute(
+                    "INSERT IGNORE INTO notice_matiere (id_notice, id_matiere) VALUES (%s, %s)",
+                    (id_notice, id_m),
+                )
+
+    def _upsert_exemplaire(self, cur, id_notice, inventaire):
+        inv = self._clean(inventaire)
+        if not inv:
+            return
+        cur.execute("SELECT id_exemplaire FROM exemplaire WHERE id_notice=%s LIMIT 1", (id_notice,))
+        row = cur.fetchone()
+        if row:
+            cur.execute("UPDATE exemplaire SET num_inventaire=%s WHERE id_exemplaire=%s", (inv, row[0]))
+        else:
+            cur.execute("INSERT INTO exemplaire (num_inventaire, id_notice) VALUES (%s, %s)", (inv, id_notice))
+
+    def add_notice(self, data):
+        inv = self._clean(data.get("N_INVENTAIRE"))
+        # Check uniqueness
+        cur = self.conn.cursor()
+        cur.execute("SELECT 1 FROM exemplaire WHERE num_inventaire=%s LIMIT 1", (inv,))
+        if cur.fetchone():
+            cur.close()
+            raise RuntimeError(f"Le numéro d'inventaire existe déjà : {inv}")
+        cur.execute("""
+            INSERT INTO notice (titre, annee_pub, nb_pages, lieu_edition,
+                                id_editeur, id_langue, id_classification)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """, (
+            self._clean(data.get("TITRE")),
+            self._safe_int(data.get("ANNEE")),
+            self._safe_int(data.get("NB_PAGES")),
+            self._clean(data.get("NOM_LIEU")) or None,
+            self._get_or_create("editeur", "nom_editeur", "id_editeur", data.get("NOM_EDITEUR")),
+            self._get_langue_id(data.get("CODE_FONDS", "BUF")),
+            self._get_or_create("classification", "cote", "id_classification", data.get("COTE")),
+        ))
+        id_notice = cur.lastrowid
+        self._link_authors_and_subjects(cur, id_notice, data.get("NOM_AUTEUR"), data.get("NOM_MATIERE"))
+        self._upsert_exemplaire(cur, id_notice, inv)
         self.conn.commit()
         cur.close()
-        return ok
+
+    def update_notice(self, id_notice, data):
+        cur = self.conn.cursor()
+        cur.execute("""
+            UPDATE notice
+            SET titre=%s, annee_pub=%s, nb_pages=%s, lieu_edition=%s,
+                id_editeur=%s, id_langue=%s, id_classification=%s
+            WHERE id_notice=%s
+        """, (
+            self._clean(data.get("TITRE")),
+            self._safe_int(data.get("ANNEE")),
+            self._safe_int(data.get("NB_PAGES")),
+            self._clean(data.get("NOM_LIEU")) or None,
+            self._get_or_create("editeur", "nom_editeur", "id_editeur", data.get("NOM_EDITEUR")),
+            self._get_langue_id(data.get("CODE_FONDS", "BUF")),
+            self._get_or_create("classification", "cote", "id_classification", data.get("COTE")),
+            id_notice,
+        ))
+        cur.execute("DELETE FROM notice_auteur  WHERE id_notice=%s", (id_notice,))
+        cur.execute("DELETE FROM notice_matiere WHERE id_notice=%s", (id_notice,))
+        self._link_authors_and_subjects(cur, id_notice, data.get("NOM_AUTEUR"), data.get("NOM_MATIERE"))
+        self._upsert_exemplaire(cur, id_notice, data.get("N_INVENTAIRE"))
+        self.conn.commit()
+        cur.close()
+
+    def delete_notice(self, id_notice):
+        cur = self.conn.cursor()
+        cur.execute("DELETE FROM exemplaire     WHERE id_notice=%s", (id_notice,))
+        cur.execute("DELETE FROM notice         WHERE id_notice=%s", (id_notice,))
+        self.conn.commit()
+        cur.close()
+
+    # ── Bulk ETL import ───────────────────────────────────────────────────────
+
+    def load_etl_tables(self, tables, progress_cb=None):
+        """
+        Load ETL-produced DataFrames into the database.
+        tables: dict returned by scripts.load.export_for_sql()
+        Keys expected: langue, editeur, auteur, classification, matiere,
+                       notice, notice_author, notice_matiere, exemplaire
+        """
+
+        def _safe_int(value):
+            if pd.isna(value):
+                return None
+            text = str(value).strip()
+            try:
+                return int(float(text)) if text else None
+            except ValueError:
+                return None
+
+        def _insert_lookup(cursor, table, column, values):
+            """Insert distinct values into a lookup table, return {value: id} map."""
+            distinct = (
+                values.dropna().astype(str).map(str.strip)
+                .loc[lambda s: s != ""].drop_duplicates()
+            )
+            for v in distinct:
+                cursor.execute(f"INSERT IGNORE INTO {table} ({column}) VALUES (%s)", (v,))
+            self.conn.commit()
+            cursor.execute(f"SELECT * FROM {table}")
+            return {str(r[1]).strip(): int(r[0]) for r in cursor.fetchall()}
+
+        cur = self.conn.cursor()
+        try:
+            if progress_cb:
+                progress_cb("Chargement des tables de référence...", 10)
+
+            # Ensure both language rows exist
+            for code, libelle in [("fre", "Francais"), ("ara", "Arabe")]:
+                cur.execute(
+                    "INSERT INTO langue (code_langue, libelle) VALUES (%s,%s) "
+                    "ON DUPLICATE KEY UPDATE libelle=VALUES(libelle)",
+                    (code, libelle),
+                )
+            self.conn.commit()
+
+            cur.execute("SELECT id_langue, code_langue FROM langue")
+            langue_map = {str(r[1]).strip(): int(r[0]) for r in cur.fetchall()}
+
+            editeur_map        = _insert_lookup(cur, "editeur",        "nom_editeur", tables["editeur"]["nom_editeur"])
+            auteur_map         = _insert_lookup(cur, "auteur",         "nom_complet", tables["auteur"]["nom_complet"])
+            classification_map = _insert_lookup(cur, "classification", "cote",        tables["classification"]["cote"])
+            matiere_map        = _insert_lookup(cur, "matiere",        "libelle",     tables["matiere"]["libelle"])
+
+            if progress_cb:
+                progress_cb("Chargement des notices...", 40)
+
+            notice_key_to_id = {}
+            notice_inserted  = 0
+
+            for _, row in tables["notice"].iterrows():
+                titre       = str(row.get("Titre")       or "").strip()
+                notice_key  = str(row.get("notice_key")  or "").strip()
+                nom_editeur = str(row.get("nom_editeur") or "").strip()
+                code_langue = str(row.get("code_langue") or "").strip()
+                cote        = str(row.get("cote")        or "").strip()
+
+                if not titre or not notice_key:
+                    continue
+
+                id_editeur        = editeur_map.get(nom_editeur)
+                id_classification = classification_map.get(cote)
+                id_langue         = langue_map.get(code_langue)
+
+                if None in (id_editeur, id_classification, id_langue):
+                    continue
+
+                cur.execute("""
+                    INSERT INTO notice
+                        (titre, annee_pub, nb_pages, lieu_edition,
+                         id_editeur, id_langue, id_classification, note)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """, (
+                    titre,
+                    _safe_int(row.get("annee_pub")),
+                    _safe_int(row.get("nb_pages")),
+                    str(row.get("lieu_edition") or "").strip() or None,
+                    id_editeur, id_langue, id_classification,
+                    None,
+                ))
+                notice_key_to_id[notice_key] = int(cur.lastrowid)
+                notice_inserted += 1
+
+            self.conn.commit()
+
+            if progress_cb:
+                progress_cb("Chargement des auteurs & matières...", 70)
+
+            for row in tables["notice_author"].itertuples(index=False):
+                nid = notice_key_to_id.get(str(row.notice_key).strip())
+                aid = auteur_map.get(str(row.nom_complet or "").strip())
+                if nid and aid:
+                    cur.execute(
+                        "INSERT IGNORE INTO notice_auteur (id_notice, id_auteur) VALUES (%s,%s)",
+                        (nid, aid),
+                    )
+            self.conn.commit()
+
+            for row in tables["notice_matiere"].itertuples(index=False):
+                nid = notice_key_to_id.get(str(row.notice_key).strip())
+                mid = matiere_map.get(str(row.libelle or "").strip())
+                if nid and mid:
+                    cur.execute(
+                        "INSERT IGNORE INTO notice_matiere (id_notice, id_matiere) VALUES (%s,%s)",
+                        (nid, mid),
+                    )
+            self.conn.commit()
+
+            if progress_cb:
+                progress_cb("Chargement des exemplaires...", 90)
+
+            for row in tables["exemplaire"].itertuples(index=False):
+                nid = notice_key_to_id.get(str(row.notice_key).strip())
+                inv = str(row.num_inventaire or "").strip()
+                if inv.endswith(".0"):
+                    inv = inv[:-2]
+                if nid and inv and inv.lower() != "nan":
+                    cur.execute(
+                        "INSERT IGNORE INTO exemplaire (num_inventaire, id_notice, etat) VALUES (%s,%s,%s)",
+                        (inv, nid, "Disponible"),
+                    )
+            self.conn.commit()
+
+            if progress_cb:
+                progress_cb("Importation terminée !", 100)
+
+            return notice_inserted
+        finally:
+            cur.close()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  FENÊTRE DE CONNEXION
+#  CONNECTION DIALOG
 # ══════════════════════════════════════════════════════════════════════════════
 
 class ConnectDialog(tk.Toplevel):
-
     def __init__(self, parent, on_connect):
         super().__init__(parent)
         self.title("Connexion MySQL")
@@ -784,1006 +722,349 @@ class ConnectDialog(tk.Toplevel):
         self.focus_force()
 
     def _build(self):
-        # Header
         hdr = tk.Frame(self, bg=C_PRIMARY, pady=14, padx=20)
         hdr.pack(fill="x")
-        tk.Label(hdr, text="🔐  Connexion MySQL",
-                 font=FONT_TITLE, fg="white", bg=C_PRIMARY).pack(anchor="w")
-        tk.Label(hdr, text="Renseignez vos identifiants ou modifiez le fichier .env",
-                 font=FONT_SMALL, fg=C_GOLD, bg=C_PRIMARY).pack(anchor="w", pady=(4,0))
+        tk.Label(hdr, text="🔐 Connexion MySQL",            font=FONT_TITLE, fg="white",  bg=C_PRIMARY).pack(anchor="w")
+        tk.Label(hdr, text="Système d'authentification SIGB", font=FONT_SMALL, fg=C_BORDER, bg=C_PRIMARY).pack(anchor="w")
 
-        body = tk.Frame(self, bg=C_BG, padx=24, pady=20)
-        body.pack(fill="both")
-
-        fields = [
-            ("Hote MySQL :",          "host",     DB_HOST,     False),
-            ("Port :",                "port",     str(DB_PORT), False),
-            ("Base :",                "database", DB_NAME,     False),
-            ("Utilisateur :",         "user",     DB_USER,     False),
-            ("Mot de passe :",        "password", DB_PASSWORD, True),
-        ]
-        self.vars = {}
-        for label, key, default, is_pass in fields:
-            frm = tk.Frame(body, bg=C_BG)
-            frm.pack(fill="x", pady=4)
-            tk.Label(frm, text=label, font=FONT_SMALL, fg=C_MUTED,
-                     bg=C_BG, width=22, anchor="w").pack(side="left")
-            var = tk.StringVar(value=default)
-            self.vars[key] = var
-            e = ttk.Entry(frm, textvariable=var, width=40, font=FONT_BODY,
-                          show="●" if is_pass else "")
-            e.pack(side="left", fill="x", expand=True)
-        tk.Label(body,
-                 text="💡 Les valeurs par defaut viennent du fichier .env a la racine du projet.",
-                 font=FONT_SMALL, fg=C_MUTED, bg=C_BG).pack(anchor="w", pady=(4,0))
-
-        # Boutons
-        btn_frm = tk.Frame(self, bg=C_SURFACE, pady=12, padx=24)
-        btn_frm.pack(fill="x")
-        ttk.Separator(btn_frm).pack(fill="x", pady=(0, 10))
-        tk.Button(btn_frm, text="✕  Annuler", command=self.destroy,
-                  font=FONT_BODY, bg=C_BG, fg=C_TEXT, relief="flat",
-                  padx=14, pady=6, cursor="hand2").pack(side="right", padx=(8,0))
-        tk.Button(btn_frm, text="🔌  Se connecter", command=self._connect,
-                  font=FONT_BODY, bg=C_PRIMARY, fg="white",
-                  relief="flat", padx=14, pady=6, cursor="hand2").pack(side="right")
-
-    def _connect(self):
-        self.on_connect(
-            host=self.vars["host"].get().strip(),
-            port=self.vars["port"].get().strip(),
-            database=self.vars["database"].get().strip(),
-            user=self.vars["user"].get().strip(),
-            password=self.vars["password"].get(),
-        )
-        self.destroy()
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  DIALOGUE AJOUT / MODIFICATION
-# ══════════════════════════════════════════════════════════════════════════════
-
-class NoticeDialog(tk.Toplevel):
-
-    FIELDS = [
-        ("N° Inventaire *",  "N_INVENTAIRE"),
-        ("Cote *",            "COTE"),
-        ("Titre *",           "TITRE"),
-        ("Auteur",            "NOM_AUTEUR"),
-        ("Lieu d'édition",    "NOM_LIEU"),
-        ("Éditeur",           "NOM_EDITEUR"),
-        ("Année",             "ANNEE"),
-        ("Nb pages",          "NB_PAGES"),
-        ("Matière",           "NOM_MATIERE"),
-    ]
-
-    def __init__(self, parent, title="Notice", data=None, on_save=None):
-        super().__init__(parent)
-        self.title(title)
-        self.resizable(False, False)
-        self.configure(bg=C_BG)
-        self.on_save = on_save
-        self.entries = {}
-        self._build(data or {})
-        self.grab_set()
-        self.focus_force()
-        self.wait_window()
-
-    def _build(self, data):
-        # Header
-        hdr = tk.Frame(self, bg=C_PRIMARY, pady=12, padx=16)
-        hdr.pack(fill="x")
-        tk.Label(hdr, text=self.title(), font=FONT_TITLE,
-                 fg="white", bg=C_PRIMARY).pack(anchor="w")
-
-        body = tk.Frame(self, bg=C_BG, padx=20, pady=16)
+        body = tk.Frame(self, bg=C_BG, padx=20, pady=15)
         body.pack(fill="both", expand=True)
 
-        for i, (label, key) in enumerate(self.FIELDS):
-            row, col = divmod(i, 2)
-            colspan = 2 if key in ("TITRE", "NOM_MATIERE") else 1
-            frm = tk.Frame(body, bg=C_BG)
-            if colspan == 2:
-                frm.grid(row=row, column=0, columnspan=4,
-                         padx=0, pady=5, sticky="ew")
-                w = 62
-            else:
-                frm.grid(row=row, column=col * 2, columnspan=2,
-                         padx=(0, 16 if col == 0 else 0),
-                         pady=5, sticky="ew")
-                w = 30
-            tk.Label(frm, text=label, font=FONT_SMALL,
-                     fg=C_MUTED, bg=C_BG).pack(anchor="w")
-            e = ttk.Entry(frm, width=w, font=FONT_BODY)
-            val = data.get(key, "")
-            e.insert(0, str(val) if val is not None else "")
-            e.pack(fill="x")
-            self.entries[key] = e
+        fields = [
+            ("Hôte de base de données :", "host", DB_HOST),
+            ("Port réseau :",             "port", str(DB_PORT)),
+            ("Nom du schéma (DB) :",      "db",   DB_NAME),
+            ("Identifiant utilisateur :",  "user", DB_USER),
+            ("Mot de passe :",             "pwd",  DB_PASSWORD),
+        ]
+        self.entries = {}
+        for label, key, default in fields:
+            row = tk.Frame(body, bg=C_BG, pady=4)
+            row.pack(fill="x")
+            tk.Label(row, text=label, font=FONT_BODY, bg=C_BG, width=22, anchor="w").pack(side="left")
+            ent = tk.Entry(row, font=FONT_BODY, bg=C_SURFACE, highlightthickness=1,
+                           highlightbackground=C_BORDER, highlightcolor=C_PRIMARY_L,
+                           show="*" if key == "pwd" else "")
+            ent.insert(0, default)
+            ent.pack(side="right", fill="x", expand=True)
+            self.entries[key] = ent
 
-        # Fonds
-        r_fonds = len(self.FIELDS) // 2 + 1
-        frm_f = tk.Frame(body, bg=C_BG)
-        frm_f.grid(row=r_fonds, column=0, columnspan=2, pady=5, sticky="ew")
-        tk.Label(frm_f, text="Fonds *", font=FONT_SMALL,
-                 fg=C_MUTED, bg=C_BG).pack(anchor="w")
-        self.var_fonds = tk.StringVar(value=data.get("CODE_FONDS", "BUF"))
-        ttk.Combobox(frm_f, textvariable=self.var_fonds,
-                     values=["BUF", "BUA"], state="readonly",
-                     width=10, font=FONT_BODY).pack(anchor="w")
+        btn_frame = tk.Frame(body, bg=C_BG, pady=10)
+        btn_frame.pack(fill="x")
+        self.btn_submit = tk.Button(
+            btn_frame, text="Se Connecter", font=FONT_HEAD,
+            bg=C_PRIMARY, fg="white", activebackground=C_PRIMARY_L,
+            activeforeground="white", padx=15, pady=4, bd=0,
+            cursor="hand2", command=self._validate,
+        )
+        self.btn_submit.pack(side="right")
 
-        body.columnconfigure(0, weight=1)
-        body.columnconfigure(1, weight=1)
-        body.columnconfigure(2, weight=1)
-        body.columnconfigure(3, weight=1)
+    def _validate(self):
+        h = self.entries["host"].get().strip()
+        p = self.entries["port"].get().strip()
+        d = self.entries["db"].get().strip()
+        u = self.entries["user"].get().strip()
+        w = self.entries["pwd"].get()
 
-        # Boutons
-        btn_frm = tk.Frame(self, bg=C_SURFACE, pady=12, padx=20)
-        btn_frm.pack(fill="x")
-        ttk.Separator(btn_frm).pack(fill="x", pady=(0, 10))
-        tk.Button(btn_frm, text="✕  Annuler", command=self.destroy,
-                  font=FONT_BODY, bg=C_BG, fg=C_TEXT,
-                  relief="flat", padx=14, pady=6,
-                  cursor="hand2").pack(side="right", padx=(8, 0))
-        tk.Button(btn_frm, text="✔  Enregistrer dans MySQL",
-                  command=self._save,
-                  font=FONT_BODY, bg=C_PRIMARY, fg="white",
-                  relief="flat", padx=14, pady=6,
-                  cursor="hand2").pack(side="right")
+        if not all([h, p, d, u]):
+            messagebox.showerror("Erreur", "Tous les champs sauf le mot de passe sont obligatoires.")
+            return
+
+        self.btn_submit.config(state="disabled", text="Connexion...")
+        self.update()
+
+        dao = MySQLDAO(host=h, port=p, database=d, user=u, password=w)
+        try:
+            dao.connect()
+            self.on_connect(dao)
+            self.destroy()
+        except Exception as e:
+            messagebox.showerror("Échec de connexion", f"Erreur rencontrée :\n{e}")
+            self.btn_submit.config(state="normal", text="Se Connecter")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  NOTICE CREATE / EDIT DIALOG
+# ══════════════════════════════════════════════════════════════════════════════
+
+class ItemDialog(tk.Toplevel):
+    def __init__(self, parent, dao, record=None, on_save=None):
+        super().__init__(parent)
+        self.dao      = dao
+        self.record   = record
+        self.on_save  = on_save
+        self.title("Notice — Modification" if record else "Notice — Création")
+        self.resizable(False, False)
+        self.configure(bg=C_BG)
+        self._build()
+        self.grab_set()
+        self.focus_force()
+
+    def _build(self):
+        hdr_bg  = C_PRIMARY if self.record else C_PRIMARY_L
+        hdr_txt = "📝 Édition de la Notice" if self.record else "➕ Ajouter une Notice"
+        hdr = tk.Frame(self, bg=hdr_bg, pady=12, padx=20)
+        hdr.pack(fill="x")
+        tk.Label(hdr, text=hdr_txt, font=FONT_TITLE, fg="white", bg=hdr_bg).pack(anchor="w")
+
+        body = tk.Frame(self, bg=C_BG, padx=20, pady=15)
+        body.pack(fill="both", expand=True)
+
+        self.vars = {}
+        fields = [
+            ("N° Inventaire (*unique) :",   "N_INVENTAIRE"),
+            ("Cote Classification :",        "COTE"),
+            ("Titre Principal :",            "TITRE"),
+            ("Auteur(s) [séparés par ';'] :","NOM_AUTEUR"),
+            ("Matière(s) [séparés par ';']:","NOM_MATIERE"),
+            ("Nom Éditeur :",                "NOM_EDITEUR"),
+            ("Lieu / Ville Édition :",       "NOM_LIEU"),
+            ("Année Publication :",          "ANNEE"),
+            ("Nombre de Pages :",            "NB_PAGES"),
+        ]
+        for lbl_txt, col in fields:
+            row = tk.Frame(body, bg=C_BG, pady=3)
+            row.pack(fill="x")
+            tk.Label(row, text=lbl_txt, font=FONT_BODY, bg=C_BG, width=25, anchor="w").pack(side="left")
+            var = tk.StringVar()
+            if self.record and col in self.record:
+                val = self.record[col]
+                var.set("" if val is None else str(val))
+            ent = tk.Entry(row, textvariable=var, font=FONT_BODY, bg=C_SURFACE,
+                           highlightthickness=1, highlightbackground=C_BORDER)
+            ent.pack(side="right", fill="x", expand=True)
+            self.vars[col] = var
+
+        row_f = tk.Frame(body, bg=C_BG, pady=5)
+        row_f.pack(fill="x")
+        tk.Label(row_f, text="Fonds Documentaire :", font=FONT_BODY, bg=C_BG, width=25, anchor="w").pack(side="left")
+        default_fonds = self.record.get("CODE_FONDS", "BUF") if self.record else "BUF"
+        self.var_fonds = tk.StringVar(value=default_fonds)
+        ttk.Combobox(row_f, textvariable=self.var_fonds, values=["BUA", "BUF"],
+                     state="readonly", font=FONT_BODY).pack(side="right", fill="x", expand=True)
+
+        btn_frame = tk.Frame(body, bg=C_BG, pady=10)
+        btn_frame.pack(fill="x")
+        tk.Button(btn_frame, text="Enregistrer", font=FONT_HEAD, bg=C_SUCCESS, fg="white",
+                  padx=15, pady=4, bd=0, cursor="hand2", command=self._save).pack(side="right", padx=5)
+        tk.Button(btn_frame, text="Annuler", font=FONT_BODY, bg=C_MUTED, fg="white",
+                  padx=10, pady=4, bd=0, cursor="hand2", command=self.destroy).pack(side="right")
 
     def _save(self):
-        inv   = self.entries["N_INVENTAIRE"].get().strip()
-        cote  = self.entries["COTE"].get().strip()
-        titre = self.entries["TITRE"].get().strip()
-        if not inv or not cote or not titre:
-            messagebox.showwarning("Champs obligatoires",
-                                   "N° Inventaire, Cote et Titre sont obligatoires.",
-                                   parent=self)
+        data = {col: var.get().strip() for col, var in self.vars.items()}
+        data["CODE_FONDS"] = self.var_fonds.get()
+
+        if not data["N_INVENTAIRE"] or not data["TITRE"]:
+            messagebox.showerror("Champs Requis", "N° Inventaire et Titre sont obligatoires.")
             return
-        result = {key: self.entries[key].get().strip() for key in self.entries}
-        result["CODE_FONDS"] = self.var_fonds.get()
-        if self.on_save:
-            self.on_save(result)
-        self.destroy()
+
+        try:
+            if self.record:
+                self.dao.update_notice(self.record["ID_NOTICE"], data)
+            else:
+                self.dao.add_notice(data)
+            if self.on_save:
+                self.on_save()
+            self.destroy()
+        except Exception as e:
+            messagebox.showerror("Erreur Sauvegarde", f"Action impossible :\n{e}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  APPLICATION PRINCIPALE
+#  MAIN APPLICATION WINDOW
 # ══════════════════════════════════════════════════════════════════════════════
 
-class SIGBApp(tk.Tk):
-
+class MainWindow(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title(APP_TITLE)
-        self.state("zoomed")
-        self.configure(bg=C_BG)
+        self.title(f"{APP_TITLE} v{APP_VERSION}")
+        self.geometry("1300x750")
         self.minsize(1100, 650)
+        self.configure(bg=C_BG)
 
-        self.dao          = None
-        self._rows        = []       # liste de dicts (résultats courants)
-        self._total       = 0        # total MySQL
-        self._page        = 0        # offset pagination
-        self._page_size   = 100
-        self._sort_col    = "N_INVENTAIRE"
-        self._sort_asc    = True
-        self._sel_id      = None     # ID_NOTICE sélectionné
-        self._sel_data    = {}
+        self.dao        = None
+        self._page      = 0
+        self._limit     = 100
+        self._sort_col  = "N_INVENTAIRE"
+        self._sort_asc  = True
 
-        self._build_styles()
-        self._build_menu()
-        self._build_toolbar()
-        self._build_main()
-        self._build_statusbar()
+        self._init_variables()
+        self._style_treeview()
+        self._build_layout()
 
-        # Tentative de connexion automatique au démarrage
-        self.after(400, self._auto_connect)
+        # Show login dialog shortly after the window opens
+        self.after(100, self._prompt_login)
 
-    # ── Styles ────────────────────────────────────────────────────────────
+    # ── Variables ─────────────────────────────────────────────────────────────
 
-    def _build_styles(self):
-        s = ttk.Style(self)
-        s.theme_use("clam")
-        s.configure("TFrame",       background=C_BG)
-        s.configure("TLabel",       background=C_BG, foreground=C_TEXT, font=FONT_BODY)
-        s.configure("TLabelframe",  background=C_BG, foreground=C_PRIMARY, font=FONT_HEAD)
-        s.configure("TLabelframe.Label", background=C_BG, foreground=C_PRIMARY, font=FONT_HEAD)
-        s.configure("TButton",      background=C_SURFACE, foreground=C_TEXT,
-                    font=FONT_BODY, padding=(10,5), relief="flat", borderwidth=1)
-        s.map("TButton", background=[("active", C_ROW_ODD)])
-        s.configure("TCombobox",    font=FONT_BODY)
-        s.configure("TEntry",       font=FONT_BODY, padding=4)
-        s.configure("Treeview",
-                    background=C_SURFACE, foreground=C_TEXT, rowheight=24,
-                    font=FONT_BODY, fieldbackground=C_SURFACE, borderwidth=0)
-        s.configure("Treeview.Heading",
-                    background=C_PRIMARY, foreground="white",
-                    font=FONT_HEAD, relief="flat", padding=(4,6))
-        s.map("Treeview.Heading", background=[("active", C_PRIMARY_L)])
-        s.map("Treeview",
-              background=[("selected", C_SEL)],
-              foreground=[("selected", C_TEXT)])
-        s.configure("TNotebook",     background=C_BG, tabmargins=[2,2,0,0])
-        s.configure("TNotebook.Tab", background=C_BORDER, foreground=C_TEXT,
-                    font=FONT_BODY, padding=[12,5])
-        s.map("TNotebook.Tab",
-              background=[("selected", C_PRIMARY)],
-              foreground=[("selected", "white")])
-
-    # ── Menu ──────────────────────────────────────────────────────────────
-
-    def _build_menu(self):
-        mb = tk.Menu(self, bg=C_SURFACE, fg=C_TEXT, font=FONT_BODY)
-        self.config(menu=mb)
-
-        m_db = tk.Menu(mb, tearoff=0, bg=C_SURFACE, fg=C_TEXT, font=FONT_BODY)
-        m_db.add_command(label="🔌  Connecter…",           command=self._open_connect_dialog)
-        m_db.add_command(label="🔌  Déconnecter",          command=self._disconnect)
-        m_db.add_separator()
-        m_db.add_command(label="🗄  Initialiser le schéma", command=self._init_schema)
-        m_db.add_separator()
-        m_db.add_command(label="✕  Quitter",               command=self.quit)
-        mb.add_cascade(label="Base de données", menu=m_db)
-
-        m_notices = tk.Menu(mb, tearoff=0, bg=C_SURFACE, fg=C_TEXT, font=FONT_BODY)
-        m_notices.add_command(label="➕  Ajouter",             command=self._add_notice)
-        m_notices.add_command(label="✏️  Modifier",            command=self._edit_notice)
-        m_notices.add_command(label="🗑  Supprimer",           command=self._delete_notice)
-        m_notices.add_separator()
-        m_notices.add_command(label="🔄  Actualiser",          command=self._search)
-        mb.add_cascade(label="Notices", menu=m_notices)
-
-        m_imp = tk.Menu(mb, tearoff=0, bg=C_SURFACE, fg=C_TEXT, font=FONT_BODY)
-        m_imp.add_command(label="📂  Importer BUA (XLS)…",    command=self._import_bua)
-        m_imp.add_command(label="📂  Importer BUF (CSV)…",    command=self._import_buf)
-        m_imp.add_separator()
-        m_imp.add_command(label="💾  Exporter CSV…",           command=self._export_csv)
-        mb.add_cascade(label="Import / Export", menu=m_imp)
-
-        m_help = tk.Menu(mb, tearoff=0, bg=C_SURFACE, fg=C_TEXT, font=FONT_BODY)
-        m_help.add_command(label="ℹ️  À propos", command=self._about)
-        mb.add_cascade(label="Aide", menu=m_help)
-
-    # ── Barre d'outils ────────────────────────────────────────────────────
-
-    def _build_toolbar(self):
-        tb = tk.Frame(self, bg=C_PRIMARY, pady=6, padx=10)
-        tb.pack(fill="x", side="top")
-
-        tk.Label(tb, text="📚  SIGB  MySQL",
-                 font=("Segoe UI", 11, "bold"),
-                 fg="white", bg=C_PRIMARY).pack(side="left", padx=(0, 24))
-
-        btns = [
-            ("➕ Ajouter",     self._add_notice,    C_GOLD,    C_TEXT),
-            ("✏️ Modifier",    self._edit_notice,   C_SURFACE, C_PRIMARY),
-            ("🗑 Supprimer",   self._delete_notice, C_ACCENT,  "white"),
-            ("🔄 Actualiser",  self._search,        C_SURFACE, C_PRIMARY),
-            ("📂 Importer",    self._import_menu,   C_SURFACE, C_PRIMARY),
-            ("💾 Export CSV",  self._export_csv,    C_SURFACE, C_PRIMARY),
-        ]
-        for txt, cmd, bg, fg in btns:
-            tk.Button(tb, text=txt, command=cmd,
-                      font=FONT_BODY, bg=bg, fg=fg,
-                      relief="flat", padx=12, pady=4,
-                      cursor="hand2").pack(side="left", padx=3)
-
-        # Indicateur connexion
-        self.conn_dot  = tk.Label(tb, text="●", font=("Segoe UI", 14),
-                                   fg=C_OFFLINE, bg=C_PRIMARY)
-        self.conn_dot.pack(side="right", padx=4)
-        self.conn_label = tk.Label(tb, text="Déconnecté",
-                                    font=FONT_SMALL, fg=C_GOLD, bg=C_PRIMARY)
-        self.conn_label.pack(side="right", padx=(0, 2))
-
-        self.lbl_count = tk.Label(tb, text="", font=FONT_SMALL,
-                                   fg=C_GOLD, bg=C_PRIMARY)
-        self.lbl_count.pack(side="right", padx=(0, 16))
-
-    # ── Corps principal ───────────────────────────────────────────────────
-
-    def _build_main(self):
-        paned = tk.PanedWindow(self, orient="horizontal",
-                               bg=C_BG, sashwidth=5, bd=0)
-        paned.pack(fill="both", expand=True, padx=8, pady=8)
-
-        left = tk.Frame(paned, bg=C_SURFACE, bd=1, relief="solid", width=270)
-        left.pack_propagate(False)
-        paned.add(left, minsize=230)
-        self._build_left(left)
-
-        right = tk.Frame(paned, bg=C_BG)
-        paned.add(right, minsize=650)
-        self._build_right(right)
-
-    # ── Panneau gauche ────────────────────────────────────────────────────
-
-    def _build_left(self, parent):
-        hdr = tk.Frame(parent, bg=C_PRIMARY, pady=10, padx=12)
-        hdr.pack(fill="x")
-        tk.Label(hdr, text="🔍  Recherche & Filtres",
-                 font=FONT_HEAD, fg="white", bg=C_PRIMARY).pack(anchor="w")
-
-        scroll = tk.Frame(parent, bg=C_SURFACE)
-        scroll.pack(fill="both", expand=True, padx=12, pady=10)
-
-        # ── Recherche ──
-        frm_s = ttk.LabelFrame(scroll, text="  Recherche  ", padding=8)
-        frm_s.pack(fill="x", pady=(0,10))
-
-        tk.Label(frm_s, text="Mot-clé :", font=FONT_SMALL, fg=C_MUTED, bg=C_BG).pack(anchor="w")
-        self.var_kw = tk.StringVar()
-        e = ttk.Entry(frm_s, textvariable=self.var_kw, width=26, font=FONT_BODY)
-        e.pack(fill="x", pady=(2,6))
-        e.bind("<Return>", lambda _: self._search())
-
-        tk.Label(frm_s, text="Dans le champ :", font=FONT_SMALL, fg=C_MUTED, bg=C_BG).pack(anchor="w")
+    def _init_variables(self):
+        self.var_kw    = tk.StringVar()
         self.var_field = tk.StringVar(value="TOUS")
-        ttk.Combobox(frm_s, textvariable=self.var_field,
-                     values=["TOUS","TITRE","AUTEUR","COTE","MATIERE","EDITEUR","LIEU"],
-                     state="readonly", width=24, font=FONT_BODY).pack(fill="x", pady=(2,0))
-
-        tk.Button(frm_s, text="🔍  Rechercher", command=self._search,
-                  font=FONT_BODY, bg=C_PRIMARY, fg="white",
-                  relief="flat", pady=5, cursor="hand2").pack(fill="x", pady=(10,0))
-
-        # ── Filtres ──
-        frm_f = ttk.LabelFrame(scroll, text="  Filtres  ", padding=8)
-        frm_f.pack(fill="x", pady=(0,10))
-
-        tk.Label(frm_f, text="Fonds :", font=FONT_SMALL, fg=C_MUTED, bg=C_BG).pack(anchor="w")
         self.var_fonds = tk.StringVar(value="TOUS")
-        ttk.Combobox(frm_f, textvariable=self.var_fonds,
-                     values=["TOUS","BUA","BUF"],
-                     state="readonly", width=24, font=FONT_BODY).pack(fill="x", pady=(2,8))
+        self.var_yr1   = tk.StringVar()
+        self.var_yr2   = tk.StringVar()
+        self._status_var = tk.StringVar(value="Hors-ligne — Authentification requise.")
+        self._stats_var  = tk.StringVar(value="Total : -- | BUA : -- | BUF : -- | Auteurs : -- | Matières : --")
 
-        tk.Label(frm_f, text="Année de :", font=FONT_SMALL, fg=C_MUTED, bg=C_BG).pack(anchor="w")
-        yr_row = tk.Frame(frm_f, bg=C_BG)
-        yr_row.pack(fill="x", pady=2)
-        self.var_yr1 = tk.StringVar()
-        self.var_yr2 = tk.StringVar()
-        ttk.Entry(yr_row, textvariable=self.var_yr1, width=8, font=FONT_BODY).pack(side="left")
-        tk.Label(yr_row, text=" à ", font=FONT_SMALL, fg=C_MUTED, bg=C_BG).pack(side="left")
-        ttk.Entry(yr_row, textvariable=self.var_yr2, width=8, font=FONT_BODY).pack(side="left")
+    # ── Styling ───────────────────────────────────────────────────────────────
 
-        tk.Button(scroll, text="↺  Réinitialiser", command=self._reset,
-                  font=FONT_SMALL, bg=C_BORDER, fg=C_TEXT,
-                  relief="flat", pady=5, cursor="hand2").pack(fill="x", pady=(4,12))
+    def _style_treeview(self):
+        style = ttk.Style()
+        style.theme_use("clam")
+        style.configure("Treeview", background=C_SURFACE, foreground=C_TEXT,
+                        rowheight=24, fieldbackground=C_SURFACE, font=FONT_BODY)
+        style.map("Treeview",
+                  background=[("selected", C_SEL)],
+                  foreground=[("selected", C_PRIMARY)])
+        style.configure("Treeview.Heading", background=C_BORDER,
+                        foreground=C_TEXT, font=FONT_HEAD, padding=5)
 
-        # ── Stats ──
-        frm_st = ttk.LabelFrame(scroll, text="  Statistiques MySQL  ", padding=8)
-        frm_st.pack(fill="x")
+    # ── Layout ────────────────────────────────────────────────────────────────
 
-        self.stats_vars = {}
-        for label, key, color in [
-            ("Total notices",  "total",    C_PRIMARY),
-            ("Fonds BUA",      "bua",      C_BUA),
-            ("Fonds BUF",      "buf",      C_BUF),
-            ("Matières",       "matieres", C_GOLD),
-            ("Auteurs",        "auteurs",  C_SUCCESS),
-            ("Affichées",      "shown",    C_ORANGE),
-        ]:
-            row = tk.Frame(frm_st, bg=C_BG)
-            row.pack(fill="x", pady=2)
-            tk.Label(row, text=label, font=FONT_SMALL,
-                     fg=C_MUTED, bg=C_BG).pack(side="left")
-            var = tk.StringVar(value="—")
-            self.stats_vars[key] = var
-            tk.Label(row, textvariable=var, font=("Segoe UI", 9, "bold"),
-                     fg=color, bg=C_BG).pack(side="right")
+    def _build_layout(self):
+        # Top bar
+        top = tk.Frame(self, bg=C_PRIMARY, pady=10, padx=15)
+        top.pack(fill="x")
+        tk.Label(top, text="📖 SIGB", font=FONT_TITLE, fg="white", bg=C_PRIMARY).pack(side="left")
+        self.lbl_status_badge = tk.Label(top, text="DÉCONNECTÉ", font=FONT_SMALL,
+                                          bg=C_ACCENT, fg="white", padx=6, pady=2)
+        self.lbl_status_badge.pack(side="left", padx=12)
 
-        tk.Button(scroll, text="🔄  Rafraîchir les stats", command=self._refresh_stats,
-                  font=FONT_SMALL, bg=C_BORDER, fg=C_TEXT,
-                  relief="flat", pady=5, cursor="hand2").pack(fill="x", pady=(8,0))
+        # Search bar
+        sf = tk.LabelFrame(self, text=" Moteur de Recherche Documentaire ",
+                           font=FONT_HEAD, bg=C_SURFACE, fg=C_PRIMARY,
+                           padx=15, pady=10, bd=1)
+        sf.pack(fill="x", padx=15, pady=10)
 
-    # ── Panneau droit ─────────────────────────────────────────────────────
+        r1 = tk.Frame(sf, bg=C_SURFACE)
+        r1.pack(fill="x", pady=2)
+        tk.Label(r1, text="Expression recherchée :", font=FONT_BODY, bg=C_SURFACE).pack(side="left")
+        ent_kw = tk.Entry(r1, textvariable=self.var_kw, font=FONT_BODY, bg=C_SURFACE,
+                          width=35, highlightthickness=1, highlightbackground=C_BORDER)
+        ent_kw.pack(side="left", padx=5)
+        ent_kw.bind("<Return>", lambda e: self._search_reset_page())
 
-    def _build_right(self, parent):
-        self.notebook = ttk.Notebook(parent)
-        self.notebook.pack(fill="both", expand=True)
+        tk.Label(r1, text="Cible :", font=FONT_BODY, bg=C_SURFACE, padx=10).pack(side="left")
+        ttk.Combobox(r1, textvariable=self.var_field, font=FONT_BODY, width=12, state="readonly",
+                     values=["TOUS", "TITRE", "AUTEUR", "COTE", "MATIERE", "EDITEUR", "LIEU"]).pack(side="left")
 
-        tab1 = tk.Frame(self.notebook, bg=C_BG)
-        self.notebook.add(tab1, text="  📋  Catalogue  ")
-        self._build_table_tab(tab1)
+        tk.Label(r1, text="Fonds :", font=FONT_BODY, bg=C_SURFACE, padx=10).pack(side="left")
+        ttk.Combobox(r1, textvariable=self.var_fonds, font=FONT_BODY, width=8, state="readonly",
+                     values=["TOUS", "BUA", "BUF"]).pack(side="left")
 
-        tab2 = tk.Frame(self.notebook, bg=C_BG)
-        self.notebook.add(tab2, text="  📄  Détail notice  ")
-        self._build_detail_tab(tab2)
+        r2 = tk.Frame(sf, bg=C_SURFACE, pady=4)
+        r2.pack(fill="x")
+        tk.Label(r2, text="Période (Années) entre :", font=FONT_BODY, bg=C_SURFACE).pack(side="left")
+        tk.Entry(r2, textvariable=self.var_yr1, font=FONT_BODY, width=6,
+                 highlightthickness=1, highlightbackground=C_BORDER).pack(side="left", padx=4)
+        tk.Label(r2, text="et", font=FONT_BODY, bg=C_SURFACE).pack(side="left", padx=2)
+        tk.Entry(r2, textvariable=self.var_yr2, font=FONT_BODY, width=6,
+                 highlightthickness=1, highlightbackground=C_BORDER).pack(side="left", padx=4)
+        tk.Button(r2, text="❌ Nettoyer", font=FONT_BODY, bg=C_MUTED, fg="white",
+                  bd=0, padx=10, pady=2, cursor="hand2", command=self._reset).pack(side="right", padx=5)
+        tk.Button(r2, text="🔍 Lancer la Recherche", font=FONT_HEAD, bg=C_PRIMARY, fg="white",
+                  bd=0, padx=15, pady=2, cursor="hand2", command=self._search_reset_page).pack(side="right")
 
-        tab3 = tk.Frame(self.notebook, bg=C_BG)
-        self.notebook.add(tab3, text="  💾  Import / Export  ")
-        self._build_io_tab(tab3)
+        # Main panel: sidebar + treeview
+        main = tk.Frame(self, bg=C_BG)
+        main.pack(fill="both", expand=True, padx=15)
 
-    # ── Onglet tableau ────────────────────────────────────────────────────
+        # Sidebar
+        sb = tk.Frame(main, bg=C_SURFACE, padx=10, pady=10, width=185, bd=1, relief="solid")
+        sb.pack(side="left", fill="y", pady=5)
+        sb.pack_propagate(False)
 
-    def _build_table_tab(self, parent):
-        frm = tk.Frame(parent, bg=C_BG)
-        frm.pack(fill="both", expand=True, padx=4, pady=4)
+        tk.Label(sb, text="ADMINISTRATION", font=FONT_HEAD, bg=C_SURFACE, fg=C_PRIMARY).pack(anchor="w", pady=5)
+        self.btn_add  = self._sidebar_btn(sb, "➕ Nouvelle Notice",    C_PRIMARY_L, self._add_item)
+        self.btn_edit = self._sidebar_btn(sb, "📝 Modifier Sélection", C_GOLD,      self._edit_item)
+        self.btn_del  = self._sidebar_btn(sb, "🗑️ Supprimer Notice",   C_ACCENT,    self._delete_item)
 
-        vsb = ttk.Scrollbar(frm, orient="vertical")
-        hsb = ttk.Scrollbar(frm, orient="horizontal")
+        ttk.Separator(sb, orient="horizontal").pack(fill="x", pady=10)
+        tk.Label(sb, text="ACTIONS EN MASSE", font=FONT_HEAD, bg=C_SURFACE, fg=C_PRIMARY).pack(anchor="w", pady=5)
+        self.btn_import = self._sidebar_btn(sb, "📥 Import Données",   C_PRIMARY, self._import_bulk)
+        self.btn_export = self._sidebar_btn(sb, "📤 Export Affichage", C_SUCCESS, self._export_view)
 
-        self.tree = ttk.Treeview(
-            frm, columns=COLUMNS, show="headings",
-            yscrollcommand=vsb.set, xscrollcommand=hsb.set,
-            selectmode="browse",
-        )
-        vsb.config(command=self.tree.yview)
-        hsb.config(command=self.tree.xview)
-        vsb.pack(side="right",  fill="y")
-        hsb.pack(side="bottom", fill="x")
+        # All admin buttons start disabled until logged in
+        for btn in [self.btn_add, self.btn_edit, self.btn_del, self.btn_import, self.btn_export]:
+            btn.config(state="disabled")
+
+        # Treeview area
+        tc = tk.Frame(main, bg=C_BG)
+        tc.pack(side="right", fill="both", expand=True, padx=(10, 0))
+
+        # Pagination bar
+        pf = tk.Frame(tc, bg=C_BG)
+        pf.pack(fill="x", pady=2)
+        self.lbl_pag  = tk.Label(pf, text="Page 1 — 0 enregistrement(s)", font=FONT_BODY, bg=C_BG)
+        self.lbl_pag.pack(side="left")
+        self.btn_next = tk.Button(pf, text="Suivant ➡️",   font=FONT_SMALL, bg=C_BORDER, bd=0,
+                                   padx=6, command=self._next_page, state="disabled")
+        self.btn_next.pack(side="right", padx=2)
+        self.btn_prev = tk.Button(pf, text="⬅️ Précédent", font=FONT_SMALL, bg=C_BORDER, bd=0,
+                                   padx=6, command=self._prev_page, state="disabled")
+        self.btn_prev.pack(side="right", padx=2)
+
+        # Treeview with scrollbars
+        scroll_y = tk.Scrollbar(tc, orient="vertical")
+        scroll_x = tk.Scrollbar(tc, orient="horizontal")
+        self.tree = ttk.Treeview(tc, columns=COLUMNS, show="headings",
+                                  yscrollcommand=scroll_y.set, xscrollcommand=scroll_x.set)
+        scroll_y.config(command=self.tree.yview)
+        scroll_x.config(command=self.tree.xview)
+        scroll_y.pack(side="right", fill="y")
         self.tree.pack(fill="both", expand=True)
+        scroll_x.pack(fill="x")
 
         for col in COLUMNS:
-            self.tree.heading(col, text=COL_LABELS[col],
-                              command=lambda c=col: self._sort_by(c))
-            self.tree.column(col, width=COL_WIDTHS[col],
-                             minwidth=40, stretch=(col == "TITRE"))
+            self.tree.heading(col, text=COL_LABELS[col], anchor="w",
+                              command=lambda c=col: self._sort_by_column(c))
+            self.tree.column(col, width=COL_WIDTHS[col], minwidth=40, anchor="w")
 
-        self.tree.tag_configure("odd",  background=C_ROW_ODD)
-        self.tree.tag_configure("even", background=C_ROW_EVEN)
+        self.tree.bind("<Double-1>", lambda e: self._edit_item())
 
-        self.tree.bind("<<TreeviewSelect>>", self._on_select)
-        self.tree.bind("<Double-1>",         self._on_double_click)
-        self.tree.bind("<Delete>",           lambda _: self._delete_notice())
+        # Status bar
+        sb2 = tk.Frame(self, bg=C_BORDER, pady=3, padx=10)
+        sb2.pack(fill="x", side="bottom")
+        tk.Label(sb2, textvariable=self._status_var, font=FONT_SMALL, bg=C_BORDER, fg=C_TEXT).pack(side="left")
+        tk.Label(sb2, textvariable=self._stats_var,  font=FONT_SMALL, bg=C_BORDER, fg=C_PRIMARY).pack(side="right")
 
-        # Menu contextuel
-        ctx = tk.Menu(self, tearoff=0, bg=C_SURFACE, fg=C_TEXT, font=FONT_BODY)
-        ctx.add_command(label="👁  Voir détail",  command=lambda: self.notebook.select(1))
-        ctx.add_command(label="✏️  Modifier",     command=self._edit_notice)
-        ctx.add_separator()
-        ctx.add_command(label="🗑  Supprimer",    command=self._delete_notice)
-        self.tree.bind("<Button-3>",
-                       lambda e: (self.tree.selection_set(
-                           self.tree.identify_row(e.y)),
-                           ctx.post(e.x_root, e.y_root)))
+    def _sidebar_btn(self, parent, text, color, command):
+        btn = tk.Button(parent, text=text, font=FONT_BODY, bg=color, fg="white",
+                        bd=0, pady=6, cursor="hand2", command=command)
+        btn.pack(fill="x", pady=3)
+        return btn
 
-        # Pagination
-        pag_frm = tk.Frame(parent, bg=C_SURFACE, pady=6)
-        pag_frm.pack(fill="x", padx=4)
-        self.btn_prev = tk.Button(pag_frm, text="◀ Précédent",
-                                   command=self._prev_page,
-                                   font=FONT_SMALL, bg=C_BORDER,
-                                   fg=C_TEXT, relief="flat",
-                                   padx=10, pady=4, cursor="hand2")
-        self.btn_prev.pack(side="left", padx=(4,2))
-        self.lbl_page = tk.Label(pag_frm, text="Page —",
-                                  font=FONT_SMALL, fg=C_MUTED, bg=C_SURFACE)
-        self.lbl_page.pack(side="left", padx=8)
-        self.btn_next = tk.Button(pag_frm, text="Suivant ▶",
-                                   command=self._next_page,
-                                   font=FONT_SMALL, bg=C_BORDER,
-                                   fg=C_TEXT, relief="flat",
-                                   padx=10, pady=4, cursor="hand2")
-        self.btn_next.pack(side="left", padx=(2,0))
-        tk.Label(pag_frm, text=f"({self._page_size} lignes/page)",
-                 font=FONT_SMALL, fg=C_MUTED, bg=C_SURFACE).pack(side="left", padx=8)
+    # ── Login flow ────────────────────────────────────────────────────────────
 
-    # ── Onglet détail ─────────────────────────────────────────────────────
+    def _prompt_login(self):
+        ConnectDialog(self, on_connect=self._on_login_success)
 
-    def _build_detail_tab(self, parent):
-        canvas = tk.Canvas(parent, bg=C_BG, highlightthickness=0)
-        vsb = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
-        canvas.configure(yscrollcommand=vsb.set)
-        vsb.pack(side="right", fill="y")
-        canvas.pack(fill="both", expand=True)
-
-        df = tk.Frame(canvas, bg=C_BG, padx=20, pady=16)
-        wid = canvas.create_window((0, 0), window=df, anchor="nw")
-        canvas.bind("<Configure>", lambda e: canvas.itemconfig(wid, width=e.width))
-        df.bind("<Configure>",
-                lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-
-        # Header
-        hdr = tk.Frame(df, bg=C_PRIMARY, pady=14, padx=16)
-        hdr.pack(fill="x", pady=(0, 16))
-        self.detail_title_var = tk.StringVar(value="Sélectionnez une notice dans le tableau…")
-        tk.Label(hdr, textvariable=self.detail_title_var,
-                 font=FONT_TITLE, fg="white", bg=C_PRIMARY,
-                 wraplength=700, justify="left").pack(anchor="w")
-
-        # Grille
-        grid = tk.Frame(df, bg=C_BG)
-        grid.pack(fill="x")
-
-        self.detail_vars = {}
-        detail_fields = [
-            ("N° Inventaire", "N_INVENTAIRE"), ("Fonds",      "CODE_FONDS"),
-            ("Cote",          "COTE"),          ("Année",      "ANNEE"),
-            ("Auteur",        "NOM_AUTEUR"),    ("Nb pages",   "NB_PAGES"),
-            ("Lieu édition",  "NOM_LIEU"),      ("Éditeur",    "NOM_EDITEUR"),
-            ("Matière",       "NOM_MATIERE"),
-            ("Date ajout",    "DATE_AJOUT"),
-        ]
-        for i, (label, key) in enumerate(detail_fields):
-            row, col = divmod(i, 2)
-            colspan = 2 if key in ("NOM_MATIERE", "DATE_AJOUT") else 1
-            cell = tk.Frame(grid, bg=C_SURFACE, bd=1, relief="solid",
-                            pady=8, padx=12)
-            cell.grid(row=row, column=col*2, columnspan=colspan*2,
-                      padx=4, pady=4, sticky="ew")
-            tk.Label(cell, text=label.upper(), font=FONT_SMALL,
-                     fg=C_MUTED, bg=C_SURFACE).pack(anchor="w")
-            var = tk.StringVar(value="—")
-            self.detail_vars[key] = var
-            tk.Label(cell, textvariable=var, font=FONT_BODY,
-                     fg=C_TEXT, bg=C_SURFACE,
-                     wraplength=320, justify="left").pack(anchor="w", pady=(2,0))
-
-        for c in range(4):
-            grid.columnconfigure(c, weight=1)
-
-        # Boutons
-        btn_frm = tk.Frame(df, bg=C_BG, pady=12)
-        btn_frm.pack(fill="x")
-        for txt, cmd, bg in [
-            ("✏️  Modifier",   self._edit_notice,   C_PRIMARY),
-            ("🗑  Supprimer",  self._delete_notice, C_ACCENT),
-        ]:
-            tk.Button(btn_frm, text=txt, command=cmd,
-                      font=FONT_BODY, bg=bg, fg="white",
-                      relief="flat", padx=14, pady=6,
-                      cursor="hand2").pack(side="left", padx=(0, 8))
-
-    # ── Onglet Import/Export ──────────────────────────────────────────────
-
-    def _build_io_tab(self, parent):
-        outer = tk.Frame(parent, bg=C_BG, padx=20, pady=20)
-        outer.pack(fill="both", expand=True)
-
-        # Import
-        frm_i = ttk.LabelFrame(outer, text="  📂  Importer vers MySQL  ", padding=12)
-        frm_i.pack(fill="x", pady=(0,16))
-        for txt, cmd, color in [
-            ("📂  Importer BUA (XLS arabe)…",    self._import_bua, C_BUA),
-            ("📂  Importer BUF (CSV français)…", self._import_buf, C_BUF),
-        ]:
-            tk.Button(frm_i, text=txt, command=cmd,
-                      font=FONT_BODY, bg=color, fg="white",
-                      relief="flat", padx=14, pady=6,
-                      cursor="hand2").pack(side="left", padx=(0, 10))
-        tk.Label(frm_i,
-                 text="⚠️  L'import ignore les numeros d'inventaire deja presents.",
-                 font=FONT_SMALL, fg=C_MUTED, bg=C_BG).pack(anchor="w", pady=(10,0))
-
-        # Barre de progression import
-        self.prog_var = tk.DoubleVar(value=0)
-        self.prog_bar = ttk.Progressbar(frm_i, variable=self.prog_var,
-                                         maximum=100, length=400)
-        self.prog_bar.pack(fill="x", pady=(8,0))
-
-        # Export
-        frm_e = ttk.LabelFrame(outer, text="  💾  Exporter depuis MySQL  ", padding=12)
-        frm_e.pack(fill="x", pady=(0,16))
-        for txt, cmd, color in [
-            ("💾  Export tout (CSV)",  self._export_csv,                C_PRIMARY),
-            ("💾  Export BUA",         lambda: self._export_csv("BUA"), C_BUA),
-            ("💾  Export BUF",         lambda: self._export_csv("BUF"), C_BUF),
-        ]:
-            tk.Button(frm_e, text=txt, command=cmd,
-                      font=FONT_BODY, bg=color, fg="white",
-                      relief="flat", padx=14, pady=6,
-                      cursor="hand2").pack(side="left", padx=(0, 8))
-
-        # Log
-        frm_log = ttk.LabelFrame(outer, text="  📋  Journal  ", padding=8)
-        frm_log.pack(fill="both", expand=True)
-        self.log = tk.Text(frm_log, font=FONT_MONO, bg="#0D1B2A",
-                            fg="#A8D8A8", height=10, state="disabled",
-                            relief="flat", bd=0)
-        log_vsb = ttk.Scrollbar(frm_log, orient="vertical", command=self.log.yview)
-        self.log.config(yscrollcommand=log_vsb.set)
-        log_vsb.pack(side="right", fill="y")
-        self.log.pack(fill="both", expand=True)
-
-    # ── Barre de statut ───────────────────────────────────────────────────
-
-    def _build_statusbar(self):
-        bar = tk.Frame(self, bg=C_PRIMARY, pady=4)
-        bar.pack(fill="x", side="bottom")
-        self._status_var = tk.StringVar(value="Prêt — En attente de connexion MySQL.")
-        tk.Label(bar, textvariable=self._status_var, font=FONT_SMALL,
-                 fg="white", bg=C_PRIMARY, padx=12).pack(side="left")
-        tk.Label(bar, text=f"SIGB v{APP_VERSION}  |  MySQL",
-                 font=FONT_SMALL, fg=C_GOLD, bg=C_PRIMARY,
-                 padx=12).pack(side="right")
-
-    # ══════════════════════════════════════════════════════════════════════
-    #  CONNEXION
-    # ══════════════════════════════════════════════════════════════════════
-
-    def _auto_connect(self):
-        """Tentative de connexion automatique avec les valeurs CONFIG."""
-        self._do_connect(DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD)
-
-    def _open_connect_dialog(self):
-        ConnectDialog(self, on_connect=self._do_connect)
-
-    def _do_connect(self, host, port, database, user, password):
-        self._status("Connexion a MySQL...")
-        self.dao = MySQLDAO(host, port, database, user, password)
-
-        def task():
-            try:
-                self.dao.connect()
-                self.after(0, self._on_connected)
-            except Exception as e:
-                err = str(e)
-                self.after(0, lambda err=err: self._on_connect_error(err))
-
-        threading.Thread(target=task, daemon=True).start()
-
-    def _on_connected(self):
-        self.conn_dot.config(fg=C_ONLINE)
-        self.conn_label.config(text=f"Connecte : {self.dao.host}/{self.dao.database}")
-        self._log(f"✔ Connexion MySQL reussie ({self.dao.host}/{self.dao.database})")
-        self._status(f"Connecte a MySQL - {self.dao.database}")
-        # Initialiser le schéma si nécessaire
-        try:
-            created = self.dao.init_schema()
-            if created:
-                self._log("✔ Schema MySQL cree")
-        except Exception as e:
-            self._log(f"⚠️ Schéma : {e}")
-        self._search()
-        self._refresh_stats()
-
-    def _on_connect_error(self, err):
-        self.conn_dot.config(fg=C_OFFLINE)
-        self.conn_label.config(text="Déconnecté")
-        self._log(f"✖ Erreur connexion : {err}")
-        self._status("Erreur de connexion MySQL.")
-        messagebox.showerror(
-            "Connexion MySQL echouee",
-            f"Impossible de se connecter :\n\n{err}\n\n"
-            "Verifiez le fichier .env ou utilisez Menu -> Base de donnees -> Connecter..."
+    def _on_login_success(self, dao_instance):
+        self.dao = dao_instance
+        self.lbl_status_badge.config(text="CONNECTÉ", bg=C_ONLINE)
+        self._status_var.set(
+            f"Connecté — {self.dao.host}:{self.dao.port}  |  Schéma : {self.dao.database}"
         )
 
-    def _disconnect(self):
-        if self.dao:
-            self.dao.disconnect()
-        self.conn_dot.config(fg=C_OFFLINE)
-        self.conn_label.config(text="Déconnecté")
-        self._status("Déconnecté.")
-        self._log("Deconnecte de MySQL.")
+        # Enable admin buttons
+        for btn in [self.btn_add, self.btn_edit, self.btn_del, self.btn_import, self.btn_export]:
+            btn.config(state="normal")
 
-    def _init_schema(self):
-        if not self._check_conn():
-            return
+        # Create schema only if it doesn't exist yet (preserves existing data)
         try:
-            self.dao.init_schema()
-            messagebox.showinfo("Schéma", "Tables créées / déjà existantes.")
+            if not self.dao.schema_exists():
+                self.dao.init_schema()
+                self._log("Schéma créé automatiquement (première initialisation).")
+            else:
+                self._log("Schéma existant détecté — chargement des données.")
         except Exception as e:
-            messagebox.showerror("Erreur DDL", str(e))
+            self._log(f"Erreur schéma : {e}")
 
-    def _check_conn(self):
-        if not self.dao or not self.dao.is_connected():
-            messagebox.showwarning(
-                "Non connecté",
-                "Vous n'etes pas connecte a MySQL.\n"
-                "Menu -> Base de donnees -> Connecter..."
-            )
-            return False
-        return True
-
-    # ══════════════════════════════════════════════════════════════════════
-    #  RECHERCHE & AFFICHAGE
-    # ══════════════════════════════════════════════════════════════════════
-
-    def _search(self, reset_page=True):
-        if not self._check_conn():
-            return
-        if reset_page:
-            self._page = 0
-        self._status("Recherche en cours…")
-
-        kw     = self.var_kw.get().strip()
-        field  = self.var_field.get()
-        fonds  = self.var_fonds.get()
-        yr1    = self.var_yr1.get().strip() or None
-        yr2    = self.var_yr2.get().strip() or None
-
-        def task():
-            try:
-                rows, total = self.dao.search(
-                    keyword=kw, field=field, fonds=fonds,
-                    yr_from=yr1, yr_to=yr2,
-                    sort_col=self._sort_col, sort_asc=self._sort_asc,
-                    limit=self._page_size, offset=self._page * self._page_size,
-                )
-                self.after(0, lambda: self._display_results(rows, total))
-            except Exception as e:
-                err = e
-                self.after(0, lambda err=err: self._status(f"Erreur : {err}"))
-                self.after(0, lambda err=err: self._log(f"✖ Recherche : {err}"))
-
-        threading.Thread(target=task, daemon=True).start()
-
-    def _display_results(self, rows, total):
-        self._rows  = rows
-        self._total = total
-        self.tree.delete(*self.tree.get_children())
-
-        for i, row in enumerate(rows):
-            vals = [str(row.get(c, "") or "") for c in COLUMNS]
-            tag  = "odd" if i % 2 == 0 else "even"
-            self.tree.insert("", "end", iid=str(i), values=vals, tags=(tag,))
-
-        pages      = max(1, -(-self._total // self._page_size))
-        cur_page   = self._page + 1
-        self.lbl_page.config(text=f"Page {cur_page} / {pages}")
-        self.btn_prev.config(state="normal" if self._page > 0 else "disabled")
-        self.btn_next.config(state="normal" if cur_page < pages else "disabled")
-        self.lbl_count.config(
-            text=f"{self._total:,} notices".replace(",", " "))
-        self.stats_vars["shown"].set(str(len(rows)))
-        self._status(f"{self._total:,} notices trouvées.".replace(",", " "))
-
-    def _next_page(self):
-        self._page += 1
-        self._search(reset_page=False)
-
-    def _prev_page(self):
-        if self._page > 0:
-            self._page -= 1
-            self._search(reset_page=False)
-
-    def _refresh_stats(self):
-        if not self._check_conn():
-            return
-        def task():
-            try:
-                st = self.dao.get_stats()
-                self.after(0, lambda: [
-                    self.stats_vars[k].set(f"{v:,}".replace(",", " "))
-                    for k, v in st.items() if k in self.stats_vars
-                ])
-            except Exception:
-                pass
-        threading.Thread(target=task, daemon=True).start()
-
-    # ── Tri ───────────────────────────────────────────────────────────────
-
-    def _sort_by(self, col):
-        if self._sort_col == col:
-            self._sort_asc = not self._sort_asc
-        else:
-            self._sort_col = col
-            self._sort_asc = True
-        arrow = " ↑" if self._sort_asc else " ↓"
-        for c in COLUMNS:
-            self.tree.heading(c, text=COL_LABELS[c] + (arrow if c == col else ""))
+        # Load stats and data immediately
+        self._refresh_stats()
         self._search()
 
-    # ── Sélection ─────────────────────────────────────────────────────────
-
-    def _on_select(self, event=None):
-        sel = self.tree.selection()
-        if not sel:
-            return
-        idx = int(sel[0])
-        row = self._rows[idx]
-        self._sel_data = row
-        self._sel_id   = None  # on ira le chercher si besoin
-
-        self.detail_title_var.set(row.get("TITRE") or "—")
-        for key, var in self.detail_vars.items():
-            val = row.get(key, "") or "—"
-            var.set(str(val))
-
-    def _on_double_click(self, event=None):
-        self.notebook.select(1)
-
-    def _get_id_notice(self):
-        """Récupère l'ID_NOTICE de la ligne sélectionnée."""
-        sel = self.tree.selection()
-        if not sel:
-            messagebox.showinfo("Aucune sélection",
-                                "Sélectionnez d'abord une notice dans le tableau.")
-            return None
-        row = self._rows[int(sel[0])]
-        if row.get("ID_NOTICE"):
-            return row["ID_NOTICE"]
-        inv = str(row.get("N_INVENTAIRE", "")).strip()
-        try:
-            cur = self.dao.conn.cursor()
-            cur.execute("""
-                SELECT id_notice
-                FROM exemplaire
-                WHERE num_inventaire=%s
-                LIMIT 1
-            """, (inv,))
-            r = cur.fetchone()
-            cur.close()
-            return r[0] if r else None
-        except Exception:
-            return None
-
-    # ══════════════════════════════════════════════════════════════════════
-    #  CRUD MYSQL
-    # ══════════════════════════════════════════════════════════════════════
-
-    # ── Ajouter ──────────────────────────────────────────────────────────
-
-    def _add_notice(self):
-        if not self._check_conn():
-            return
-        def on_save(data):
-            try:
-                self.dao.add_notice(data)
-                self._log(f"✔ Ajout MySQL — Inv. {data['N_INVENTAIRE']} | {data['TITRE'][:50]}")
-                self._status("Notice ajoutee dans MySQL.")
-                self._search()
-                self._refresh_stats()
-            except Exception as e:
-                messagebox.showerror("Erreur MySQL", f"INSERT echoue :\n{e}")
-                self._log(f"✖ Ajout échoué : {e}")
-        NoticeDialog(self, title="➕  Nouvelle notice", on_save=on_save)
-
-    # ── Modifier ─────────────────────────────────────────────────────────
-
-    def _edit_notice(self):
-        if not self._check_conn():
-            return
-        id_notice = self._get_id_notice()
-        if not id_notice:
-            return
-        # Recharger la notice complete depuis MySQL
-        full = self.dao.get_notice(id_notice)
-        if not full:
-            messagebox.showerror("Erreur", "Notice introuvable en base.")
-            return
-        def on_save(data):
-            try:
-                self.dao.update_notice(id_notice, data)
-                self._log(f"✔ Modif MySQL — Inv. {data['N_INVENTAIRE']} | {data['TITRE'][:50]}")
-                self._status("Notice modifiee dans MySQL.")
-                self._search()
-            except Exception as e:
-                messagebox.showerror("Erreur MySQL", f"UPDATE echoue :\n{e}")
-                self._log(f"✖ Modif échouée : {e}")
-        NoticeDialog(self, title="✏️  Modifier la notice",
-                     data=full, on_save=on_save)
-
-    # ── Supprimer ─────────────────────────────────────────────────────────
-
-    def _delete_notice(self):
-        if not self._check_conn():
-            return
-        id_notice = self._get_id_notice()
-        if not id_notice:
-            return
-        titre = (self._sel_data.get("TITRE") or "")[:60]
-        inv   = self._sel_data.get("N_INVENTAIRE", "?")
-        if not messagebox.askyesno(
-                "Confirmer la suppression",
-                f"Supprimer definitivement de la base MySQL :\n\n"
-                f"«{titre}»\n(N° inventaire : {inv}) ?",
-                icon="warning"):
-            return
-        try:
-            self.dao.delete_notice(id_notice)
-            self._log(f"🗑 Supprime MySQL — ID {id_notice} | Inv. {inv}")
-            self._status(f"Notice supprimée (Inv. {inv}).")
-            self._search()
-            self._refresh_stats()
-        except Exception as e:
-            messagebox.showerror("Erreur MySQL", f"DELETE echoue :\n{e}")
-            self._log(f"✖ Suppression échouée : {e}")
-
-    # ══════════════════════════════════════════════════════════════════════
-    #  IMPORT
-    # ══════════════════════════════════════════════════════════════════════
-
-    def _import_menu(self):
-        m = tk.Menu(self, tearoff=0, bg=C_SURFACE, fg=C_TEXT, font=FONT_BODY)
-        m.add_command(label="📂  Importer BUA (XLS)…", command=self._import_bua)
-        m.add_command(label="📂  Importer BUF (CSV)…", command=self._import_buf)
-        m.post(self.winfo_pointerx(), self.winfo_pointery())
-
-    def _import_bua(self):
-        if not self._check_conn():
-            return
-        path = filedialog.askopenfilename(
-            title="Choisir BUA (XLS)",
-            filetypes=[("Excel 97-2003", "*.xls"), ("Tous", "*.*")])
-        if not path:
-            return
-        self._run_import(path, "BUA", "xls")
-
-    def _import_buf(self):
-        if not self._check_conn():
-            return
-        path = filedialog.askopenfilename(
-            title="Choisir BUF (CSV)",
-            filetypes=[("CSV", "*.csv"), ("Tous", "*.*")])
-        if not path:
-            return
-        self._run_import(path, "BUF", "csv")
-
-    def _run_import(self, path, fonds, fmt):
-        self._status(f"Import {fonds} en cours…")
-        self._log(f"Import {fonds} depuis {os.path.basename(path)}…")
-        self.prog_var.set(0)
-
-        def task():
-            try:
-                if not PANDAS_OK:
-                    raise RuntimeError(
-                        "pandas non installé. Installez les dépendances : pip install pandas xlrd openpyxl"
-                    )
-                import pandas as pd
-                if fmt == "xls":
-                    df = pd.read_excel(path, engine="xlrd", dtype=str)
-                    df.columns = ["Cote","Titre","Auteur","Lieu","Edition",
-                                  "Annee","Nb_pages","Matiere","Inventaire"]
-                else:
-                    df = pd.read_csv(path, sep=";", encoding="latin1",
-                                      header=None, dtype=str)
-                    df.columns = ["Cote","Titre","Auteur","Lieu","Edition",
-                                  "Annee","Nb_pages","Matiere","Inventaire"]
-                df = df.fillna("")
-                rows = df.to_dict(orient="records")
-
-                def progress(done, total):
-                    pct = done / total * 100
-                    self.after(0, lambda: self.prog_var.set(pct))
-
-                ok = self.dao.bulk_insert(rows, fonds, progress_cb=progress)
-                self.after(0, lambda: self.prog_var.set(100))
-                self.after(0, lambda: self._log(
-                    f"✔ Import termine : {ok} notices inserees dans MySQL ({fonds})"))
-                self.after(0, lambda: self._status(
-                    f"Import {fonds} terminé : {ok} notices."))
-                self.after(0, self._search)
-                self.after(0, self._refresh_stats)
-            except Exception as e:
-                err = str(e)
-                self.after(0, lambda err=err: self._log(f"✖ Import échoué : {err}"))
-                self.after(0, lambda err=err: messagebox.showerror("Erreur import", err))
-
-        threading.Thread(target=task, daemon=True).start()
-
-    # ══════════════════════════════════════════════════════════════════════
-    #  EXPORT CSV
-    # ══════════════════════════════════════════════════════════════════════
-
-    def _export_csv(self, fonds=None):
-        if not self._check_conn():
-            return
-        path = filedialog.asksaveasfilename(
-            title="Exporter CSV",
-            defaultextension=".csv",
-            initialfile=f"sigb_{fonds or 'all'}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-            filetypes=[("CSV", "*.csv")])
-        if not path:
-            return
-        self._status("Export CSV en cours…")
-
-        def task():
-            try:
-                rows, _ = self.dao.search(
-                    fonds=fonds or "TOUS",
-                    limit=99999, offset=0,
-                )
-                with open(path, "w", newline="", encoding="utf-8-sig") as f:
-                    writer = csv.DictWriter(f, fieldnames=COLUMNS,
-                                            delimiter=";", extrasaction="ignore")
-                    writer.writeheader()
-                    writer.writerows(rows)
-                self.after(0, lambda: self._log(
-                    f"✔ Export CSV → {os.path.basename(path)} ({len(rows)} lignes)"))
-                self.after(0, lambda: self._status("Export CSV terminé."))
-                self.after(0, lambda: messagebox.showinfo(
-                    "Export réussi", f"{len(rows)} notices exportées\n→ {path}"))
-            except Exception as e:
-                err = str(e)
-                self.after(0, lambda err=err: messagebox.showerror("Erreur export", err))
-
-        threading.Thread(target=task, daemon=True).start()
-
-    # ══════════════════════════════════════════════════════════════════════
-    #  UTILITAIRES
-    # ══════════════════════════════════════════════════════════════════════
+    # ── Search & pagination ───────────────────────────────────────────────────
 
     def _reset(self):
         self.var_kw.set("")
@@ -1794,35 +1075,267 @@ class SIGBApp(tk.Tk):
         self._page = 0
         self._search()
 
+    def _search_reset_page(self):
+        self._page = 0
+        self._search()
+
+    def _search(self):
+        if not self.dao:
+            return
+        self._status("Chargement des données...")
+
+        kw     = self.var_kw.get().strip()
+        fld    = self.var_field.get()
+        fnds   = self.var_fonds.get()
+        y1     = self.var_yr1.get().strip()
+        y2     = self.var_yr2.get().strip()
+        offset = self._page * self._limit
+
+        def bg_worker():
+            try:
+                rows, total = self.dao.search(
+                    keyword=kw, field=fld, fonds=fnds,
+                    yr_from=y1, yr_to=y2,
+                    sort_col=self._sort_col, sort_asc=self._sort_asc,
+                    limit=self._limit, offset=offset,
+                )
+                self.after(0, self._update_table_view, rows, total, offset)
+            except Exception as err:
+                self.after(0, lambda e=err: messagebox.showerror(
+                    "Erreur Requête", f"Impossible de récupérer les données :\n{e}"
+                ))
+
+        threading.Thread(target=bg_worker, daemon=True).start()
+
+    def _update_table_view(self, rows, total, offset):
+        self.tree.delete(*self.tree.get_children())
+
+        for idx, r in enumerate(rows):
+            tag  = "odd" if idx % 2 != 0 else "even"
+            vals = ["" if r.get(c) is None else str(r.get(c)) for c in COLUMNS]
+            iid  = self.tree.insert("", "end", values=vals, tags=(tag,))
+            # Store hidden ID_NOTICE in the item's text field
+            self.tree.item(iid, text=str(r.get("ID_NOTICE", "")))
+
+        self.tree.tag_configure("odd",  background=C_ROW_ODD)
+        self.tree.tag_configure("even", background=C_ROW_EVEN)
+
+        end_idx   = min(offset + self._limit, total)
+        start_idx = offset + 1 if total > 0 else 0
+        self.lbl_pag.config(
+            text=f"Page {self._page + 1} — {start_idx} à {end_idx} sur {total} enregistrement(s)"
+        )
+        self.btn_prev.config(state="normal" if self._page > 0 else "disabled")
+        self.btn_next.config(state="normal" if end_idx < total else "disabled")
+        self._status(f"Prêt — {total} enregistrement(s) trouvé(s).")
+
+    def _sort_by_column(self, col):
+        if self._sort_col == col:
+            self._sort_asc = not self._sort_asc
+        else:
+            self._sort_col = col
+            self._sort_asc = True
+        self._search()
+
+    def _next_page(self):
+        self._page += 1
+        self._search()
+
+    def _prev_page(self):
+        if self._page > 0:
+            self._page -= 1
+            self._search()
+
+    def _refresh_stats(self):
+        if not self.dao:
+            return
+        def bg():
+            try:
+                s = self.dao.get_stats()
+                txt = (
+                    f"Total notices : {s.get('total', 0)}  |  "
+                    f"BUA (Arabe) : {s.get('bua', 0)}  |  "
+                    f"BUF (Français) : {s.get('buf', 0)}  |  "
+                    f"Auteurs : {s.get('auteurs', 0)}  |  "
+                    f"Matières : {s.get('matieres', 0)}"
+                )
+                self.after(0, lambda: self._stats_var.set(txt))
+            except Exception:
+                pass
+        threading.Thread(target=bg, daemon=True).start()
+
+    # ── CRUD actions ──────────────────────────────────────────────────────────
+
+    def _add_item(self):
+        ItemDialog(self, self.dao, on_save=self._on_mutation_complete)
+
+    def _edit_item(self):
+        sel = self.tree.selection()
+        if not sel:
+            messagebox.showwarning("Sélection", "Veuillez sélectionner une ligne.")
+            return
+        id_notice = self.tree.item(sel[0], "text")
+        try:
+            record = self.dao.get_notice(id_notice)
+            if record:
+                ItemDialog(self, self.dao, record=record, on_save=self._on_mutation_complete)
+            else:
+                messagebox.showerror("Introuvable", "La notice n'existe plus en base.")
+        except Exception as e:
+            messagebox.showerror("Erreur", str(e))
+
+    def _delete_item(self):
+        sel = self.tree.selection()
+        if not sel:
+            messagebox.showwarning("Sélection", "Veuillez sélectionner la ligne à supprimer.")
+            return
+        id_notice = self.tree.item(sel[0], "text")
+        titre     = self.tree.item(sel[0], "values")[2]
+        if messagebox.askyesno("Confirmation",
+                               f"Supprimer définitivement la notice :\n\"{titre}\" ?"):
+            try:
+                self.dao.delete_notice(id_notice)
+                self._log(f"Notice supprimée (ID: {id_notice}).")
+                self._on_mutation_complete()
+            except Exception as e:
+                messagebox.showerror("Échec", f"Action impossible :\n{e}")
+
+    def _on_mutation_complete(self):
+        self._refresh_stats()
+        self._search()
+
+    # ── Bulk import (ETL pipeline) ────────────────────────────────────────────
+
+    def _import_bulk(self):
+        fp = filedialog.askopenfilename(
+            filetypes=[("Fichiers supportés", "*.csv *.xls *.xlsx"), ("CSV", "*.csv")]
+        )
+        if not fp:
+            return
+
+        # Ask which fonds this file belongs to
+        top = tk.Toplevel(self)
+        top.title("Fonds cible")
+        top.geometry("300x120")
+        top.resizable(False, False)
+        top.grab_set()
+        tk.Label(top, text="Choisir le fonds de destination :", font=FONT_BODY, pady=10).pack()
+        v_f = tk.StringVar(value="BUF")
+        ttk.Combobox(top, textvariable=v_f, values=["BUA", "BUF"],
+                     state="readonly", font=FONT_BODY).pack()
+
+        def proceed():
+            f_code = v_f.get()
+            top.destroy()
+            self._process_bulk_file(fp, f_code)
+
+        tk.Button(top, text="Valider", font=FONT_HEAD, bg=C_PRIMARY, fg="white",
+                  command=proceed, bd=0, padx=10, pady=2).pack(pady=10)
+
+    def _process_bulk_file(self, filepath, fonds_code):
+        if not PANDAS_OK:
+            messagebox.showerror("Dépendance manquante",
+                                 "pandas est requis pour l'import.\n"
+                                 "pip install pandas openpyxl xlrd")
+            return
+
+        self._status("Lecture du fichier et préparation de l'import...")
+        path = Path(filepath)
+
+        # Progress window
+        p_win = tk.Toplevel(self)
+        p_win.title("Importation en cours...")
+        p_win.geometry("420x110")
+        p_win.resizable(False, False)
+        p_win.grab_set()
+        lbl_p = tk.Label(p_win, text="Initialisation...", font=FONT_BODY, pady=10)
+        lbl_p.pack()
+        p_bar = ttk.Progressbar(p_win, orient="horizontal", length=380, mode="determinate")
+        p_bar.pack(pady=5)
+
+        def run_import():
+            try:
+                # 1. EXTRACT
+                self.after(0, lambda: lbl_p.config(text="Extraction des données..."))
+                if path.suffix.lower() == ".csv":
+                    df = export.export_data_csv(str(path))
+                else:
+                    df = export.export_data_excel(str(path))
+
+                if df is None or df.empty:
+                    self.after(0, lambda: messagebox.showerror("Vide", "Aucune donnée lue dans ce fichier."))
+                    self.after(0, p_win.destroy)
+                    return
+
+                # 2. TRANSFORM
+                self.after(0, lambda: lbl_p.config(text="Transformation ETL..."))
+                lang_code    = self.dao.LANG_BY_FONDS.get(fonds_code, "fre")
+                df_transform = transform.transform(df, lang_code)
+
+                # 3. LOAD (prepare SQL-ready tables)
+                self.after(0, lambda: lbl_p.config(text="Préparation des tables SQL..."))
+                tables = load.export_for_sql(df_transform)
+
+                # 4. INSERT into DB with progress updates
+                def progress(msg, pct):
+                    self.after(0, lambda: p_bar.config(value=pct))
+                    self.after(0, lambda: lbl_p.config(text=msg))
+
+                count = self.dao.load_etl_tables(tables, progress_cb=progress)
+
+                self.after(0, p_win.destroy)
+                self.after(0, lambda: messagebox.showinfo(
+                    "Succès", f"Import terminé !\n{count} nouvelle(s) notice(s) insérée(s)."
+                ))
+                self.after(0, self._on_mutation_complete)
+
+            except Exception as e:
+                self.after(0, p_win.destroy)
+                self.after(0, lambda: messagebox.showerror("Erreur d'import", f"Échec :\n{e}"))
+
+        threading.Thread(target=run_import, daemon=True).start()
+
+    # ── Export visible grid to CSV ────────────────────────────────────────────
+
+    def _export_view(self):
+        fp = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            filetypes=[("Fichier CSV", "*.csv")],
+        )
+        if not fp:
+            return
+        try:
+            with open(fp, mode="w", encoding="utf-8-sig", newline="") as f:
+                writer = csv.writer(f, delimiter=";")
+                writer.writerow([COL_LABELS[c] for c in COLUMNS])
+                for iid in self.tree.get_children():
+                    writer.writerow(self.tree.item(iid, "values"))
+            messagebox.showinfo("Exportation", "Données exportées avec succès.")
+        except Exception as e:
+            messagebox.showerror("Erreur Export", str(e))
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+
     def _status(self, msg):
         self._status_var.set(msg)
 
     def _log(self, msg):
-        ts = datetime.now().strftime("%H:%M:%S")
-        self.log.config(state="normal")
-        self.log.insert("end", f"[{ts}]  {msg}\n")
-        self.log.see("end")
-        self.log.config(state="disabled")
-
-    def _about(self):
-        messagebox.showinfo(
-            f"À propos — SIGB v{APP_VERSION}",
-            f"SIGB — Système Intégré de Gestion Bibliothécaire\n"
-            f"Version {APP_VERSION}\n\n"
-            f"Base de donnees : MySQL\n"
-            f"Driver : mysql-connector-python\n"
-            f"Configuration : fichier .env\n\n"
-            f"Fonctions : Recherche · Ajout · Modification\n"
-            f"            Suppression · Import bulk · Export CSV\n\n"
-            f"Dépendances :\n"
-            f"  pip install mysql-connector-python python-dotenv pandas xlrd openpyxl"
-        )
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  POINT D'ENTRÉE
+#  ENTRY POINT
 # ══════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    app = SIGBApp()
-    app.mainloop()
+    if not MYSQL_OK:
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showerror(
+            "Dépendance critique",
+            "Le pilote mysql-connector-python est introuvable.\n"
+            "Installez-le : pip install mysql-connector-python",
+        )
+    else:
+        app = MainWindow()
+        app.mainloop()
